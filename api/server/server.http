@@ -1,0 +1,85 @@
+# For a quick start check out our HTTP Requests collection (Tools|HTTP Client|Open HTTP Requests Collection).
+#
+# Following HTTP Request Live Templates are available:
+# * 'gtrp' and 'gtr' create a GET request with or without query parameters;
+# * 'ptr' and 'ptrp' create a POST request with a simple or parameter-like body;
+# * 'mptr' and 'fptr' create a POST request to submit a form with a text or file field (multipart/form-data);
+### 删除用户
+POST http://localhost:8081/api/user/del/4
+
+### 添加用户
+
+POST http://localhost:8081/api/user/add
+Content-Type: application/json
+
+{
+"uid":4,
+"port":10003,
+"passwd":"@123",
+"limit":0
+}
+
+### 编辑用户
+POST http://localhost:8081/api/user/edit
+Content-Type: application/json
+
+{
+  "uid":1,
+  "port":10002,
+  "passwd":"@123",
+  "speed_limit_per_user":500
+}
+
+### 用户列表
+GET http://localhost:8081/api/user/list?id=1
+secret: 6dkiwc7c
+
+### 增加多个用户
+POST http://localhost:8081/api/v2/user/add/list
+Content-Type: application/json
+secret: 6dkiwc7c
+
+[
+    {
+      "uid":4,
+      "port":10003,
+      "passwd":"@123",
+      "limit":0
+    },
+    {
+      "uid":5,
+      "port":10004,
+      "passwd":"@123",
+      "limit":0
+    }
+]
+
+
+### 删除多个用户
+POST http://localhost:8081/api/v2/user/del/list
+Content-Type: application/json
+secret: 6dkiwc7c
+
+[1,4]
+
+
+###  重载配置
+POST http://localhost:8081/api/v2/node/reload
+Content-Type: application/json
+secret: 6dkiwc7c
+
+{
+  "id":1,
+  "port":"8085",
+  "passwd":"killer",
+  "method":"aes-128-cfb",
+  "protocol":"auth_chain_a",
+  "obfs":"http_simple",
+  "protocol_param":"",
+  "obfs_param":"",
+  "push_port": 8081,
+  "single":1,
+  "secret":"6dkiwc7c"
+}
+
+###

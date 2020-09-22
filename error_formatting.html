@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>错误格式化</title>
+    <style type="text/css">
+        *{
+            padding:0;
+            margin:0;
+        }
+        .input-textarea textarea{
+            width: 80%;
+            height: 300px;
+            display: block;
+            box-sizing: content-box;
+        }
+        button{
+            padding: 5px 10px;
+            background: skyblue;
+            color:#FFF;
+            border: 1px deepskyblue solid;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+<div>
+    <div class="input-textarea">
+            <textarea id="raw"></textarea>
+    </div>
+    <button id="convert">格式化</button>
+    <div class="input-textarea">
+            <textarea id="formate"></textarea>
+    </div>
+    <script type="text/javascript">
+        var button = document.querySelector("#convert")
+        button.addEventListener("click",function(){
+            const rawText = document.querySelector("#raw").value;
+            const formatText = rawText.replace(/\\r/g, "\r").replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+            var formateNode = document.querySelector("#formate");
+            if(formateNode != null){
+                formateNode.value = formatText;
+            }
+        })
+    </script>
+</div>
+</body>
+</html>

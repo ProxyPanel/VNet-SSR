@@ -1,0 +1,13 @@
+bin/
+/server
+/server.exe
+/vnet
+/vnet.exe
+/config.json
+*.test.exe
+*.pprof
+.idea/**
+main
+main.exe
+/test
+.vscode/
