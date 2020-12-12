@@ -1,5 +1,5 @@
 package core
 
 const (
-	APP_VERSION = "v2.0.6"
+	APP_VERSION = "v2.1.0"
 )

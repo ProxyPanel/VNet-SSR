@@ -1,3 +1,7 @@
+## 2020-12-13 03:38:56
+version 2.1.0
+Open-source!
+
 ## 2019-11-12 18:09:00
 version 2.0.4
 fix: AEAD package Integrity

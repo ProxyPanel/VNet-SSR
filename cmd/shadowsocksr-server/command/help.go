@@ -16,19 +16,20 @@ package command
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+
 	"github.com/rc452860/vnet/common/log"
 	"github.com/rc452860/vnet/core"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"os"
-	"path/filepath"
-	"reflect"
 )
 
 var rootCmd = &cobra.Command{
 	Use:   filepath.Base(os.Args[0]),
 	Short: fmt.Sprintf("vnet version %s\r\n", core.APP_VERSION),
-	Long:  fmt.Sprintf("vnet webapi version with ssrpanel, current version: %s", core.APP_VERSION),
+	Long:  fmt.Sprintf("vnet webapi version with ProxyPanel, current version: %s", core.APP_VERSION),
 }
 
 func init() {
@@ -68,8 +69,8 @@ func initConfig() {
 	viper.SetConfigFile(viper.GetString("config"))
 	// If a config file is found, read it in.
 	if err := viper.ReadInConfig(); err == nil {
-		abspath,err := filepath.Abs(viper.ConfigFileUsed())
-		if err != nil{
+		abspath, err := filepath.Abs(viper.ConfigFileUsed())
+		if err != nil {
 			panic(err)
 		}
 		fmt.Println("using config file:", abspath)
@@ -89,12 +90,12 @@ func checkRequired() bool {
 		if item.Required {
 			switch item.Type {
 			case reflect.String:
-				if viper.GetString(item.Name) == ""{
+				if viper.GetString(item.Name) == "" {
 					log.Warn("miss param:" + item.Name)
 					return false
 				}
 			case reflect.Int:
-				if viper.GetInt(item.Name) == 0{
+				if viper.GetInt(item.Name) == 0 {
 					log.Warn("miss param:" + item.Name)
 					return false
 				}
