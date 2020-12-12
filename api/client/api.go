@@ -4,10 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"github.com/rc452860/vnet/common/log"
-	"github.com/rc452860/vnet/core"
 	"net/http"
-	"net/url"
 	"strconv"
 	"time"
 

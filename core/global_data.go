@@ -1,14 +1,9 @@
 package core
 
 import (
-	"crypto/tls"
 	"github.com/rc452860/vnet/model"
 	"github.com/robfig/cron"
 	"github.com/stackimpact/stackimpact-go"
-	"github.com/tidwall/gjson"
-	"gopkg.in/resty.v1"
-	"net/http"
-	"time"
 )
 
 var (
@@ -40,10 +35,6 @@ type App struct {
 }
 
 func (a *App) Init() error {
-	client := resty.New().
-		SetTransport(&http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}).
-		SetTimeout(5 * time.Second).
-		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
 	return nil
 }
 
