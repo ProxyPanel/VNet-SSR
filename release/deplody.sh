@@ -137,7 +137,7 @@ archAffix() {
 downloadVNet() {
   rm -rf /tmp/vnet
   mkdir -p /tmp/vnet
-  DOWNLOAD_LINK="https://kitami-hk.oss-cn-hongkong.aliyuncs.com/vnet/${NEW_VER}/vnet-linux-${VDIS}.zip"
+  DOWNLOAD_LINK="https://github.com/ProxyPanel/VNet-SSR/releases/download/${NEW_VER}/vnet-linux-${VDIS}.zip"
   colorEcho ${BLUE} "Downloading vnet: ${DOWNLOAD_LINK}"
   curl ${PROXY} -L -H "Cache-Control: no-cache" -o ${ZIPFILE} ${DOWNLOAD_LINK}
   if [ $? != 0 ]; then
@@ -228,7 +228,7 @@ getVersion() {
     VER="$(/usr/bin/vnet -version 2>/dev/null)"
     RETVAL=$?
     CUR_VER="$(normalizeVersion "$(echo "$VER" | head -n 1 | cut -d " " -f2)")"
-    TAG_URL="https://kitami-hk.oss-cn-hongkong.aliyuncs.com/vnet/version.json"
+    TAG_URL="https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master/release/version.json"
     NEW_VER="$(normalizeVersion "$(curl ${PROXY} -s "${TAG_URL}" --connect-timeout 10 | grep 'latest' | cut -d\" -f4)")"
 
     if [[ $? -ne 0 ]] || [[ $NEW_VER == "" ]]; then
