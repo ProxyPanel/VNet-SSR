@@ -1,4 +1,4 @@
-module github.com/rc452860/vnet
+module github.com/ProxyPanel/VNet-SSR
 
 go 1.14
 

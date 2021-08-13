@@ -6,8 +6,8 @@ Vnet是一个网络工具,在某些网络条件受到限速的情况根据算法
 ## 编译方式
 预安装: [Go语言](https://golang.org/), [Bazel](https://docs.bazel.build/)
 ```sh
-rm -rf ~/go/src/github.com/rc452860
-git clone https://github.com/ProxyPanel/VNet-SSR.git ~/go/src/github.com/rc452860/vnet && cd ~/go/src/github.com/rc452860/vnet
+rm -rf vent
+git clone https://github.com/ProxyPanel/VNet-SSR.git vent && cd vent
 GO111MODULE=off go get -v ./...
 bazel build --action_env=PATH=$PATH --action_env=SPWD=$PWD --action_env=GOPATH=$(go env GOPATH) --action_env=GOCACHE=$(go env GOCACHE) --spawn_strategy local //release:vnet_linux_amd64_package
 ```

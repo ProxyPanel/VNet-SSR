@@ -2,8 +2,8 @@ package network
 
 import (
 	"context"
-	"github.com/rc452860/vnet/common/log"
-	"github.com/rc452860/vnet/utils/osx"
+	"github.com/ProxyPanel/VNet-SSR/common/log"
+	"github.com/ProxyPanel/VNet-SSR/utils/osx"
 	"strings"
 	"time"
 )

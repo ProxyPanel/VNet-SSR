@@ -4,7 +4,7 @@ import (
 	"crypto/cipher"
 	"encoding/binary"
 
-	"github.com/rc452860/vnet/common/pool"
+	"github.com/ProxyPanel/VNet-SSR/common/pool"
 	"golang.org/x/crypto/salsa20/salsa"
 )
 

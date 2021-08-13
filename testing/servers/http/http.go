@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ProxyPanel/VNet-SSR/common/log"
+	"github.com/ProxyPanel/VNet-SSR/utils/datasize"
 	"github.com/gin-gonic/gin"
-	"github.com/rc452860/vnet/common/log"
-	"github.com/rc452860/vnet/utils/datasize"
 )
 
 type FakeFile struct {

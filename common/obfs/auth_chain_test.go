@@ -5,7 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
-	"github.com/rc452860/vnet/utils/binaryx"
+	"github.com/ProxyPanel/VNet-SSR/utils/binaryx"
 	"net"
 	"testing"
 )

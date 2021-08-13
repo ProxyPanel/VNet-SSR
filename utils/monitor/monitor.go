@@ -2,7 +2,7 @@ package monitor
 
 
 import (
-	"github.com/rc452860/vnet/common/log"
+	"github.com/ProxyPanel/VNet-SSR/common/log"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/disk"
 	"github.com/shirou/gopsutil/mem"

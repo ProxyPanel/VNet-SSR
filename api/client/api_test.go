@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/rc452860/vnet/model"
+	"github.com/ProxyPanel/VNet-SSR/model"
 	"github.com/sirupsen/logrus"
 )
 

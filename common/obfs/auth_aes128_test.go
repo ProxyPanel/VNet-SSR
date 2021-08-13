@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto/md5"
 	"fmt"
-	"github.com/rc452860/vnet/utils/binaryx"
+	"github.com/ProxyPanel/VNet-SSR/utils/binaryx"
 	"github.com/sirupsen/logrus"
 	"net"
 	"reflect"

@@ -3,7 +3,7 @@ package socksproxy
 
 import (
 	"fmt"
-	"github.com/rc452860/vnet/utils"
+	"github.com/ProxyPanel/VNet-SSR/utils"
 	"reflect"
 	"testing"
 )

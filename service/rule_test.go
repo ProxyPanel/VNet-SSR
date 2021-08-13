@@ -3,7 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/rc452860/vnet/model"
+	"github.com/ProxyPanel/VNet-SSR/model"
 	"github.com/tidwall/gjson"
 	"regexp"
 	"testing"

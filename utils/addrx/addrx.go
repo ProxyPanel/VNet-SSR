@@ -1,7 +1,7 @@
 package addrx
 
 import (
-	"github.com/rc452860/vnet/utils/langx"
+	"github.com/ProxyPanel/VNet-SSR/utils/langx"
 	"io/ioutil"
 	"net"
 	"net/http"

@@ -9,7 +9,7 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 
-	"github.com/rc452860/vnet/common/log"
+	"github.com/ProxyPanel/VNet-SSR/common/log"
 )
 
 func GetAEADConnCipher(method string) func(string, net.Conn) (net.Conn, error) {

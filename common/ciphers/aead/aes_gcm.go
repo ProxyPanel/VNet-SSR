@@ -3,7 +3,7 @@ package aead
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"github.com/rc452860/vnet/utils/shadowsocksx"
+	"github.com/ProxyPanel/VNet-SSR/utils/shadowsocksx"
 )
 
 func init() {

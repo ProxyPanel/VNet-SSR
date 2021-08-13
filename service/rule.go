@@ -2,11 +2,11 @@ package service
 
 import (
 	"fmt"
-	"github.com/rc452860/vnet/api/client"
-	"github.com/rc452860/vnet/common/cache"
-	"github.com/rc452860/vnet/common/log"
-	"github.com/rc452860/vnet/core"
-	"github.com/rc452860/vnet/model"
+	"github.com/ProxyPanel/VNet-SSR/api/client"
+	"github.com/ProxyPanel/VNet-SSR/common/cache"
+	"github.com/ProxyPanel/VNet-SSR/common/log"
+	"github.com/ProxyPanel/VNet-SSR/core"
+	"github.com/ProxyPanel/VNet-SSR/model"
 	"regexp"
 	"time"
 )

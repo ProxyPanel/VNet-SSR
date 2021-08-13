@@ -1,12 +1,12 @@
 package netx
 
 import (
+	"github.com/ProxyPanel/VNet-SSR/common/log"
+	"github.com/ProxyPanel/VNet-SSR/common/network"
+	"github.com/ProxyPanel/VNet-SSR/common/pool"
+	"github.com/ProxyPanel/VNet-SSR/utils/goroutine"
+	"github.com/ProxyPanel/VNet-SSR/utils/socksproxy"
 	"github.com/pkg/errors"
-	"github.com/rc452860/vnet/common/log"
-	"github.com/rc452860/vnet/common/network"
-	"github.com/rc452860/vnet/common/pool"
-	"github.com/rc452860/vnet/utils/goroutine"
-	"github.com/rc452860/vnet/utils/socksproxy"
 	"io"
 	"net"
 	"sync"

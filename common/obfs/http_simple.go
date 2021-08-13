@@ -3,9 +3,9 @@ package obfs
 import (
 	"bytes"
 	"encoding/hex"
-	"github.com/rc452860/vnet/utils/arrayx"
-	"github.com/rc452860/vnet/utils/bytesx"
-	"github.com/rc452860/vnet/utils/randomx"
+	"github.com/ProxyPanel/VNet-SSR/utils/arrayx"
+	"github.com/ProxyPanel/VNet-SSR/utils/bytesx"
+	"github.com/ProxyPanel/VNet-SSR/utils/randomx"
 	"github.com/sirupsen/logrus"
 	"net/http"
 	"strconv"

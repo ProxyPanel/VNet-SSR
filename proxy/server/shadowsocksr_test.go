@@ -2,8 +2,8 @@ package server
 
 import (
 	"fmt"
-	"github.com/rc452860/vnet/common/network/ciphers"
-	"github.com/rc452860/vnet/utils/socksproxy"
+	"github.com/ProxyPanel/VNet-SSR/common/network/ciphers"
+	"github.com/ProxyPanel/VNet-SSR/utils/socksproxy"
 	"io/ioutil"
 	"net"
 	"net/http"

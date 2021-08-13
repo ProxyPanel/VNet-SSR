@@ -1,6 +1,6 @@
 package main
 
-import "github.com/rc452860/vnet/utils/osx"
+import "github.com/ProxyPanel/VNet-SSR/utils/osx"
 
 func main(){
 	println("start...")

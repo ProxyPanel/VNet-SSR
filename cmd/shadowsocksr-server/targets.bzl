@@ -2,7 +2,7 @@ load("//release/bazel:build.bzl", "foreign_go_binary")
 load("//release/bazel:gpg.bzl", "gpg_sign")
 
 def gen_targets(matrix):
-  pkg = "github.com/rc452860/vnet/cmd/shadowsocksr-server"
+  pkg = "github.com/ProxyPanel/VNet-SSR/cmd/shadowsocksr-server"
   output = "vnet"
 
   for (os, arch) in matrix:

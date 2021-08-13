@@ -8,8 +8,8 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/rc452860/vnet/common/log"
-	"github.com/rc452860/vnet/common/pool"
+	"github.com/ProxyPanel/VNet-SSR/common/log"
+	"github.com/ProxyPanel/VNet-SSR/common/pool"
 )
 
 const MAX_PACKET_SIZE = 65507

@@ -1,7 +1,7 @@
 package core
 
 import (
-	"github.com/rc452860/vnet/model"
+	"github.com/ProxyPanel/VNet-SSR/model"
 	"github.com/robfig/cron"
 	"github.com/stackimpact/stackimpact-go"
 )

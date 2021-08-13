@@ -7,8 +7,8 @@ import (
 	"io"
 	"net"
 
-	"github.com/rc452860/vnet/common/log"
-	"github.com/rc452860/vnet/common/pool"
+	"github.com/ProxyPanel/VNet-SSR/common/log"
+	"github.com/ProxyPanel/VNet-SSR/common/pool"
 )
 
 func GetStreamConnCiphers(method string) func(string, net.Conn) (net.Conn, error) {

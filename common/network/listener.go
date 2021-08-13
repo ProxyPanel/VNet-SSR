@@ -3,8 +3,8 @@ package network
 import (
 	"context"
 	"errors"
-	"github.com/rc452860/vnet/common/log"
-	"github.com/rc452860/vnet/utils/addrx"
+	"github.com/ProxyPanel/VNet-SSR/common/log"
+	"github.com/ProxyPanel/VNet-SSR/utils/addrx"
 	"github.com/sirupsen/logrus"
 	"net"
 	"runtime/debug"

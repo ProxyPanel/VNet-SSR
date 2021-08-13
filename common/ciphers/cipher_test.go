@@ -6,8 +6,8 @@ import (
 	"crypto/cipher"
 	"encoding/hex"
 	"fmt"
-	"github.com/rc452860/vnet/common/log"
-	"github.com/rc452860/vnet/utils/bytesx"
+	"github.com/ProxyPanel/VNet-SSR/common/log"
+	"github.com/ProxyPanel/VNet-SSR/utils/bytesx"
 	"strings"
 	"testing"
 )

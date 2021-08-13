@@ -13,7 +13,7 @@ deploy:
   # draft: true
   overwrite: true
   on:
-    repo: rc452860/vnet
+    repo: ProxyPanel/VNet-SSR
     branch: master
     tags: true
   api_key: 

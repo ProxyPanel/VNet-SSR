@@ -20,8 +20,8 @@ import (
 	"path/filepath"
 	"reflect"
 
-	"github.com/rc452860/vnet/common/log"
-	"github.com/rc452860/vnet/core"
+	"github.com/ProxyPanel/VNet-SSR/common/log"
+	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )

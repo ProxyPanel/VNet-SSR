@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/rc452860/vnet/common/ciphers/aead"
-	"github.com/rc452860/vnet/common/ciphers/stream"
+	"github.com/ProxyPanel/VNet-SSR/common/ciphers/aead"
+	"github.com/ProxyPanel/VNet-SSR/common/ciphers/stream"
 )
 
 //加密装饰

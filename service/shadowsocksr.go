@@ -3,10 +3,10 @@ package service
 import (
 	"context"
 	"fmt"
-	"github.com/rc452860/vnet/api/client"
-	"github.com/rc452860/vnet/cmd/shadowsocksr-server/command"
-	"github.com/rc452860/vnet/common/log"
-	"github.com/rc452860/vnet/core"
+	"github.com/ProxyPanel/VNet-SSR/api/client"
+	"github.com/ProxyPanel/VNet-SSR/cmd/shadowsocksr-server/command"
+	"github.com/ProxyPanel/VNet-SSR/common/log"
+	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/spf13/viper"
 	"runtime/debug"
 	"strconv"
@@ -14,13 +14,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ProxyPanel/VNet-SSR/common/network"
+	"github.com/ProxyPanel/VNet-SSR/model"
+	"github.com/ProxyPanel/VNet-SSR/proxy/server"
+	"github.com/ProxyPanel/VNet-SSR/utils/addrx"
+	"github.com/ProxyPanel/VNet-SSR/utils/monitor"
 	"github.com/dustin/go-humanize"
 	"github.com/pkg/errors"
-	"github.com/rc452860/vnet/common/network"
-	"github.com/rc452860/vnet/model"
-	"github.com/rc452860/vnet/proxy/server"
-	"github.com/rc452860/vnet/utils/addrx"
-	"github.com/rc452860/vnet/utils/monitor"
 	"github.com/sirupsen/logrus"
 )
 

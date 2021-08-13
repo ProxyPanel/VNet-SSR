@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ProxyPanel/VNet-SSR/model"
+	"github.com/ProxyPanel/VNet-SSR/utils/langx"
+	"github.com/ProxyPanel/VNet-SSR/utils/stringx"
 	"github.com/pkg/errors"
-	"github.com/rc452860/vnet/model"
-	"github.com/rc452860/vnet/utils/langx"
-	"github.com/rc452860/vnet/utils/stringx"
 	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"gopkg.in/resty.v1"
