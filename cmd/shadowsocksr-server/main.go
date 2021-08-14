@@ -35,9 +35,7 @@ func main() {
 		}
 		log.Info("get public ip %s", core.GetApp().GetPublicIP())
 
-		client.SetHost(core.GetApp().ApiHost())
-
-		nodeInfo, err := client.GetNodeInfo(core.GetApp().NodeId(), viper.GetString(command.KEY))
+		nodeInfo, err := client.GetNodeInfo()
 		if err != nil {
 			logrus.Fatal(err)
 		}

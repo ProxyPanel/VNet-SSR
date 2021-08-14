@@ -3,7 +3,6 @@ package socksproxy
 
 import (
 	"fmt"
-	"github.com/ProxyPanel/VNet-SSR/utils"
 	"reflect"
 	"testing"
 )
@@ -11,14 +10,14 @@ import (
 func TestSocks5Addr_GetRaw(t *testing.T) {
 	tests := []struct {
 		name    string
-		ss      *utils.Socks5Addr
+		ss      *Socks5Addr
 		wantRaw []byte
 		wantErr bool
 	}{
 		{
 			"aaa",
-			utils.NewSSProtocol(utils.AtypIPv4, 3306, "127.0.0.1"),
-			utils.NewSSProtocol(utils.AtypIPv4, 3306, "127.0.0.1").MustGetRaw(),
+			NewSSProtocol(AtypIPv4, 3306, "127.0.0.1"),
+			NewSSProtocol(AtypIPv4, 3306, "127.0.0.1").MustGetRaw(),
 			false,
 		},
 	}
@@ -37,15 +36,15 @@ func TestSocks5Addr_GetRaw(t *testing.T) {
 }
 
 func ExampleSocks5Addr_GetRaw() {
-	fmt.Printf("%v\n", utils.NewSSProtocol(utils.AtypIPv4, 3306, "127.0.0.1").MustGetRaw())
-	ss := utils.SplitAddr(utils.NewSSProtocol(utils.AtypIPv4, 3306, "127.0.0.1").MustGetRaw())
+	fmt.Printf("%v\n", NewSSProtocol(AtypIPv4, 3306, "127.0.0.1").MustGetRaw())
+	ss, _ := SplitAddr(NewSSProtocol(AtypIPv4, 3306, "127.0.0.1").MustGetRaw())
 	if ss == nil {
 		fmt.Println("ss is null")
 	}
 	fmt.Printf("%v\n", ss.MustGetRaw())
 
-	fmt.Printf("%v\n", utils.NewSSProtocol(utils.AtypDomainName, 3306, "baidu.com").MustGetRaw())
-	ss = utils.SplitAddr(utils.NewSSProtocol(utils.AtypDomainName, 3306, "baidu.com").MustGetRaw())
+	fmt.Printf("%v\n", NewSSProtocol(AtypDomainName, 3306, "baidu.com").MustGetRaw())
+	ss, _ = SplitAddr(NewSSProtocol(AtypDomainName, 3306, "baidu.com").MustGetRaw())
 	if ss == nil {
 		fmt.Println("ss is null")
 	}

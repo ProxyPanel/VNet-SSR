@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/api/client"
-	"github.com/ProxyPanel/VNet-SSR/cmd/shadowsocksr-server/command"
 	"github.com/ProxyPanel/VNet-SSR/common/log"
 	"github.com/ProxyPanel/VNet-SSR/core"
-	"github.com/spf13/viper"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -436,27 +434,20 @@ func (s *SSRManager) ReportTask() {
 			traffic := s.ReportTraffic()
 			log.Info("prepare report traffic data, data length: %v", len(traffic))
 			if len(traffic) > 0 {
-				if err := client.PostAllUserTraffic(traffic,
-					viper.GetInt(command.NODE_ID),
-					viper.GetString(command.KEY)); err != nil {
+				if err := client.PostAllUserTraffic(traffic); err != nil {
 					logrus.Error(err)
 				}
 			}
 			online := s.ReportOnline()
 			log.Info("prepare report online data, data length: %v", len(online))
 			if len(online) > 0 {
-				if err := client.PostNodeOnline(online,
-					viper.GetInt(command.NODE_ID),
-					viper.GetString(command.KEY)); err != nil {
+				if err := client.PostNodeOnline(online); err != nil {
 					logrus.Error(err)
-
 				}
 			}
 
 			log.Info("post node status")
-			if err := client.PostNodeStatus(s.ReportNodeStatus(),
-				viper.GetInt(command.NODE_ID),
-				viper.GetString(command.KEY)); err != nil {
+			if err := client.PostNodeStatus(s.ReportNodeStatus()); err != nil {
 				logrus.Error(err)
 			}
 		}
@@ -466,7 +457,7 @@ func (s *SSRManager) ReportTask() {
 
 func (s *SSRManager) GetUids() []int {
 	uids := make([]int, 0, len(s.userTable))
-	for key, _ := range s.userTable {
+	for key := range s.userTable {
 		uids = append(uids, key)
 	}
 	return uids
@@ -510,7 +501,7 @@ func (s *SSRManager) Start() error {
 
 	log.Info("prepare get user list")
 	// load users
-	users, err := client.GetUserList(core.GetApp().NodeId(), viper.GetString(command.KEY))
+	users, err := client.GetUserList()
 	if err != nil {
 		logrus.Fatal(fmt.Sprintf("get user list error: %s,%s", err.Error(), string(debug.Stack())))
 	}

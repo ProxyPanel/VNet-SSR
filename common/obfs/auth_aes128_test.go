@@ -56,7 +56,7 @@ func TestAuthAes128(t *testing.T){
 
 
 func GetAuthAes128() Plain{
-	auth := AuthAes128Md5Factory("auth_aes128_md5")
+	auth, _ := AuthAes128Md5Factory("auth_aes128_md5")
 	serverInfo := NewServerInfo()
 	serverInfo.GetUsers()[string(binaryx.LEUint32ToBytes(1024))] = "killer"
 	serverInfo.SetClient(net.ParseIP("127.0.0.1"))

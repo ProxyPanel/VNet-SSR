@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/ProxyPanel/VNet-SSR/core"
 	"net/http"
 	"strconv"
 	"time"
@@ -26,20 +27,16 @@ func init() {
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
 }
 
-var (
-	HOST = ""
-)
-
-func SetHost(host string) {
-	HOST = host
-}
+var Host = core.GetApp().Host() + "/api/ssr/v1"
 
 // implement for vnet api get request
-func get(url string, header map[string]string) (result string, err error) {
-	logrus.WithFields(logrus.Fields{
-		"url": url,
-	}).Debug("get")
+func get(url string) (result string, err error) {
+	logrus.WithFields(logrus.Fields{"url": url}).Debug("get")
 
+	header := map[string]string{
+		"key":       core.GetApp().Key(),
+		"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
+	}
 	r, err := restyc.R().SetHeaders(header).Get(url)
 	if err != nil {
 		return "", errors.Wrap(err, "get request error")
@@ -53,12 +50,16 @@ func get(url string, header map[string]string) (result string, err error) {
 	return responseJson, nil
 }
 
-func post(url, param string, header map[string]string) (result string, err error) {
+func post(url, param string) (result string, err error) {
 	logrus.WithFields(logrus.Fields{
 		"param": param,
 		"url":   url,
 	}).Debug("post")
-	header["Content-Type"] = "application/json"
+	header := map[string]string{
+		"key":          core.GetApp().Key(),
+		"timestamp":    strconv.FormatInt(time.Now().Unix(), 10),
+		"Content-Type": "application/json",
+	}
 	r, err := restyc.R().SetHeaders(header).SetBody(param).Post(url)
 	if err != nil {
 		return "", errors.Wrap(err, "get request error")
@@ -72,12 +73,9 @@ func post(url, param string, header map[string]string) (result string, err error
 
 /*------------------------------ code below is webapi implement ------------------------------*/
 
-// GetNodeInfo
-func GetNodeInfo(nodeID int, key string) (*model.NodeInfo, error) {
-	response, err := get(fmt.Sprintf("%s/api/web/v1/node/%s", HOST, strconv.Itoa(nodeID)), map[string]string{
-		"key":       key,
-		"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
-	})
+// GetNodeInfo Get Node Info
+func GetNodeInfo() (*model.NodeInfo, error) {
+	response, err := get(fmt.Sprintf("%s/node/%s", Host, strconv.Itoa(core.GetApp().NodeId())))
 	if err != nil {
 		return nil, err
 	}
@@ -97,23 +95,20 @@ func GetNodeInfo(nodeID int, key string) (*model.NodeInfo, error) {
 	return result, nil
 }
 
-// GetUserList
-func GetUserList(nodeID int, key string) ([]*model.UserInfo, error) {
-	response, err := get(fmt.Sprintf("%s/api/web/v1/userList/%s", HOST, strconv.Itoa(nodeID)), map[string]string{
-		"key":       key,
-		"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
-	})
+// GetUserList Get User List
+func GetUserList() ([]*model.UserInfo, error) {
+	response, err := get(fmt.Sprintf("%s/userList/%s", Host, strconv.Itoa(core.GetApp().NodeId())))
 	if err != nil {
 		return nil, err
 	}
 	if gjson.Get(response, "status").String() != "success" {
-		return nil, errors.New((stringx.UnicodeToUtf8(gjson.Get(response, "message").String())))
+		return nil, errors.New(stringx.UnicodeToUtf8(gjson.Get(response, "message").String()))
 	}
 	value := gjson.Get(response, "data").String()
 	if value == "" {
 		return nil, errors.New("get data not found: " + response)
 	}
-	result := []*model.UserInfo{}
+	var result []*model.UserInfo
 	err = json.Unmarshal([]byte(value), &result)
 	if err != nil {
 		return nil, err
@@ -121,15 +116,11 @@ func GetUserList(nodeID int, key string) ([]*model.UserInfo, error) {
 	return result, nil
 }
 
-func PostAllUserTraffic(allUserTraffic []*model.UserTraffic, nodeID int, key string) error {
-	value, err := post(fmt.Sprintf("%s/api/web/v1/userTraffic/%s", HOST, strconv.Itoa(nodeID)),
+func PostAllUserTraffic(allUserTraffic []*model.UserTraffic) error {
+	value, err := post(fmt.Sprintf("%s/userTraffic/%s", Host, strconv.Itoa(core.GetApp().NodeId())),
 		string(langx.Must(func() (interface{}, error) {
 			return json.Marshal(allUserTraffic)
-		}).([]byte)),
-		map[string]string{
-			"key":       key,
-			"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
-		})
+		}).([]byte)))
 
 	if err != nil {
 		return err
@@ -140,15 +131,11 @@ func PostAllUserTraffic(allUserTraffic []*model.UserTraffic, nodeID int, key str
 	return nil
 }
 
-func PostNodeOnline(nodeOnline []*model.NodeOnline, nodeID int, key string) error {
-	value, err := post(fmt.Sprintf("%s/api/web/v1/nodeOnline/%s", HOST, strconv.Itoa(nodeID)),
+func PostNodeOnline(nodeOnline []*model.NodeOnline) error {
+	value, err := post(fmt.Sprintf("%s/nodeOnline/%s", Host, strconv.Itoa(core.GetApp().NodeId())),
 		string(langx.Must(func() (interface{}, error) {
 			return json.Marshal(nodeOnline)
-		}).([]byte)),
-		map[string]string{
-			"key":       key,
-			"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
-		})
+		}).([]byte)))
 
 	if err != nil {
 		return err
@@ -160,56 +147,45 @@ func PostNodeOnline(nodeOnline []*model.NodeOnline, nodeID int, key string) erro
 	return nil
 }
 
-func PostNodeStatus(status model.NodeStatus, nodeID int, key string) error {
-	value, err := post(fmt.Sprintf("%s/api/web/v1/nodeStatus/%s", HOST, strconv.Itoa(nodeID)),
+func PostNodeStatus(status model.NodeStatus) error {
+	value, err := post(fmt.Sprintf("%s/nodeStatus/%s", Host, strconv.Itoa(core.GetApp().NodeId())),
 		string(langx.Must(func() (interface{}, error) {
 			return json.Marshal(status)
-		}).([]byte)),
-		map[string]string{
-			"key":       key,
-			"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
-		})
+		}).([]byte)))
 
 	if err != nil {
 		return err
 	}
 	if gjson.Get(value, "status").String() != "success" {
-		return errors.New((stringx.UnicodeToUtf8(gjson.Get(value, "message").String())))
+		return errors.New(stringx.UnicodeToUtf8(gjson.Get(value, "message").String()))
 	}
 	return nil
 }
 
-// when user trigger audit rules then report
-func PostTrigger(nodeID int, key string, trigger model.Trigger) error {
-	value, err := post(fmt.Sprintf("%s/api/web/v1/trigger/%s", HOST, strconv.Itoa(nodeID)),
+// PostTrigger when user trigger audit rules then report
+func PostTrigger(trigger model.Trigger) error {
+	value, err := post(fmt.Sprintf("%s/trigger/%s", Host, strconv.Itoa(core.GetApp().NodeId())),
 		string(langx.Must(func() (interface{}, error) {
 			return json.Marshal(trigger)
-		}).([]byte)),
-		map[string]string{
-			"key":       key,
-			"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
-		})
+		}).([]byte)))
 
 	if err != nil {
 		return err
 	}
 	if gjson.Get(value, "status").String() != "success" {
-		return errors.New((stringx.UnicodeToUtf8(gjson.Get(value, "message").String())))
+		return errors.New(stringx.UnicodeToUtf8(gjson.Get(value, "message").String()))
 	}
 	return nil
 }
 
-// GetNodeRule
-func GetNodeRule(nodeID int, key string) (*model.Rule, error) {
-	response, err := get(fmt.Sprintf("%s/api/web/v1/nodeRule/%s", HOST, strconv.Itoa(nodeID)), map[string]string{
-		"key":       key,
-		"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
-	})
+// GetNodeRule Get Node Rule
+func GetNodeRule() (*model.Rule, error) {
+	response, err := get(fmt.Sprintf("%s/nodeRule/%s", Host, strconv.Itoa(core.GetApp().NodeId())))
 	if err != nil {
 		return nil, err
 	}
 	if gjson.Get(response, "status").String() != "success" {
-		return nil, errors.New((stringx.UnicodeToUtf8(gjson.Get(response, "message").String())))
+		return nil, errors.New(stringx.UnicodeToUtf8(gjson.Get(response, "message").String()))
 	}
 	value := gjson.Get(response, "data").String()
 	if value == "" {

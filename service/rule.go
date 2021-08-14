@@ -5,20 +5,19 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/api/client"
 	"github.com/ProxyPanel/VNet-SSR/common/cache"
 	"github.com/ProxyPanel/VNet-SSR/common/log"
-	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/ProxyPanel/VNet-SSR/model"
 	"regexp"
 	"time"
 )
 
 const (
-	RULE_TYPE_REG    = "reg"
-	RULE_TYPE_DOMAIN = "domain"
-	RULE_TYPE_IP     = "ip"
+	RuleTypeReg    = "reg"
+	RuleTypeDomain = "domain"
+	RuleTypeIp     = "ip"
 
-	RULE_MODE_ALLOW  = "allow"
-	RULE_MODE_REJECT = "reject"
-	RULE_MODE_ALL    = "all"
+	RuleModeAllow  = "allow"
+	RuleModeReject = "reject"
+	RuleModeAll    = "all"
 )
 
 var (
@@ -45,15 +44,15 @@ func NewRuleService() *RuleService {
 	return r
 }
 
-// RuleService set all field to default.
+// Reset RuleService set all field to default.
 func (r *RuleService) Reset() {
 	r.cache = cache.NewLruCache(5 * time.Second)
 	r.rules = make([]*RuleItemComiled, 0, 256)
-	r.mode = RULE_MODE_ALL
+	r.mode = RuleModeAll
 }
 
 func (r *RuleService) LoadFromApi() error {
-	rule, err := client.GetNodeRule(core.GetApp().NodeId(), core.GetApp().Key())
+	rule, err := client.GetNodeRule()
 	if err != nil {
 		return err
 	}
@@ -61,13 +60,13 @@ func (r *RuleService) LoadFromApi() error {
 	return nil
 }
 
-// RuleService load rule
+// Load RuleService load rule
 func (r *RuleService) Load(rule *model.Rule) {
 	r.Reset()
 	r.mode = rule.Model
 	for _, item := range rule.Rules {
 		switch item.Type {
-		case RULE_TYPE_REG:
+		case RuleTypeReg:
 			regexCompiled, err := regexp.Compile(item.Pattern)
 			if err != nil {
 				log.Error("compile regex %s error: %s ", item.Pattern, err.Error())
@@ -78,12 +77,12 @@ func (r *RuleService) Load(rule *model.Rule) {
 				RuleItem: item,
 				compile:  regexCompiled,
 			})
-		case RULE_TYPE_IP:
+		case RuleTypeIp:
 			r.rules = append(r.rules, &RuleItemComiled{
 				RuleItem: item,
 				compile:  item.Pattern,
 			})
-		case RULE_TYPE_DOMAIN:
+		case RuleTypeDomain:
 			r.rules = append(r.rules, &RuleItemComiled{
 				RuleItem: item,
 				compile:  item.Pattern,
@@ -103,7 +102,7 @@ func (r *RuleService) JudgeHostWithReport(ipOrDomain string, port int) bool {
 	uid := GetSSRManager().PortToUid(port)
 	if !result {
 		go func() {
-			err := client.PostTrigger(core.GetApp().NodeId(), core.GetApp().Key(), model.Trigger{
+			err := client.PostTrigger(model.Trigger{
 				Uid:    uid,
 				RuleId: ruleId,
 				Reason: ipOrDomain,
@@ -142,33 +141,33 @@ func (r *RuleService) judgeWithCache(ipOrDomain string, port int) (ruleId int, r
 
 func (r *RuleService) judge(host string) (int, bool) {
 	// check if cache have value then return cache value
-	if r.mode == RULE_MODE_ALL {
+	if r.mode == RuleModeAll {
 		return 0, true
 	}
 
 	for _, regexItem := range r.rules {
 		switch regexItem.Type {
-		case RULE_TYPE_REG:
+		case RuleTypeReg:
 			regexCompiled, ok := regexItem.compile.(*regexp.Regexp)
 			if !ok {
 				log.Error("regex %s break", regexItem.Pattern)
 				continue
 			}
 
-			if r.mode == RULE_MODE_ALLOW && regexCompiled.Match([]byte(host)) {
+			if r.mode == RuleModeAllow && regexCompiled.Match([]byte(host)) {
 				return 0, true
 			}
 
-			if r.mode == RULE_MODE_REJECT && regexCompiled.Match([]byte(host)) {
+			if r.mode == RuleModeReject && regexCompiled.Match([]byte(host)) {
 				return regexItem.Id, false
 			}
 
-		case RULE_TYPE_DOMAIN, RULE_TYPE_IP:
-			if r.mode == RULE_MODE_ALLOW && regexItem.Pattern == host {
+		case RuleTypeDomain, RuleTypeIp:
+			if r.mode == RuleModeAllow && regexItem.Pattern == host {
 				return 0, true
 			}
 
-			if r.mode == RULE_MODE_REJECT && regexItem.Pattern == host {
+			if r.mode == RuleModeReject && regexItem.Pattern == host {
 				return regexItem.Id, false
 			}
 		default:
@@ -176,7 +175,7 @@ func (r *RuleService) judge(host string) (int, bool) {
 		}
 	}
 
-	if r.mode == RULE_MODE_REJECT {
+	if r.mode == RuleModeReject {
 		return 0, true
 	}
 	return 0, false
