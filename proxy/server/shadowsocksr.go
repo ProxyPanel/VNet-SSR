@@ -15,6 +15,7 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/utils/socksproxy"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -101,7 +102,7 @@ func (ssr *ShadowsocksRProxy) StartTCP() error {
 			}()
 			defer ssrd.Close()
 			addr, err := socksproxy.ReadAddr(ssrd)
-			if err != nil {
+			if err != nil && err != io.EOF {
 				logrus.WithFields(logrus.Fields{
 					"requestId": ssrd.RequestID,
 				}).Errorf("shadowsocksr read address error %s", err)
@@ -189,7 +190,7 @@ func (ssr *ShadowsocksRProxy) StartUDP() error {
 					continue
 				}
 				remoteAddr, err := socksproxy.SplitAddr(data)
-				if err != nil {
+				if err != nil && err != io.EOF {
 					logrus.WithFields(logrus.Fields{
 						"requestId": ssrd.RequestID,
 					}).Errorf("shadowsocksr read address error %s", err)
