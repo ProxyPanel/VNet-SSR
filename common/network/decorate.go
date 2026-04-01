@@ -301,11 +301,25 @@ func (ssrd *ShadowsocksRDecorate) ReadFrom() (data, uid []byte, addr net.Addr, e
 		ssrd.TrafficReport.Upload(ssrd.UID, int64(n))
 		uidPack = string(binaryx.LEUint32ToBytes(uint32(ssrd.UID)))
 	}
+	// apply upload rate limiting
+	if ssrd.ILimiter != nil {
+		uidInt := int(binaryx.LEBytesToUInt32([]byte(uidPack)))
+		if err = ssrd.ILimiter.UpLimit(uidInt, n); err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	return result, []byte(uidPack), addr, err
 
 }
 
 func (ssrd *ShadowsocksRDecorate) WriteTo(p, uid []byte, addr net.Addr) error {
+	// apply download rate limiting
+	if ssrd.ILimiter != nil {
+		uidInt := int(binaryx.LEBytesToUInt32([]byte(uid)))
+		if err := ssrd.ILimiter.DownLimit(uidInt, len(p)); err != nil {
+			return err
+		}
+	}
 	data, err := ssrd.protocol.ServerUDPPreEncrypt(p, uid)
 	if err != nil {
 		return err

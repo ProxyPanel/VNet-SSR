@@ -166,6 +166,7 @@ func (ssr *ShadowsocksRProxy) StartUDP() error {
 				ssr.Single,
 				ssr.Users)
 			ssrd.TrafficReport = ssr.TrafficReport
+			ssrd.SetLimter(ssr.ILimiter)
 			if err != nil {
 				logrus.WithFields(logrus.Fields{
 					"requestId": request.RequestID,
