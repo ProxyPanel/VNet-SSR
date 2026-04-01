@@ -21,6 +21,8 @@ type ILimiter interface {
 	Wait(int, int) error
 	DownLimit(int, int) error
 	UpLimit(int, int) error
+	AllowUp(int, int) bool
+	AllowDown(int, int) bool
 }
 
 func NewShadowsocksRDecorate(request *Request, obfsMethod, cryptMethod, key, protocolMethod, obfsParam, protocolParam, host string, port int, isLocal bool, single int, users map[string]string) (ssrd *ShadowsocksRDecorate, err error) {
@@ -301,11 +303,12 @@ func (ssrd *ShadowsocksRDecorate) ReadFrom() (data, uid []byte, addr net.Addr, e
 		ssrd.TrafficReport.Upload(ssrd.UID, int64(n))
 		uidPack = string(binaryx.LEUint32ToBytes(uint32(ssrd.UID)))
 	}
-	// apply upload rate limiting
+	// apply upload rate limiting — non-blocking: drop over-limit UDP packet so the shared loop
+	// continues processing other users without being stalled by a single user's token bucket.
 	if ssrd.ILimiter != nil {
 		uidInt := int(binaryx.LEBytesToUInt32([]byte(uidPack)))
-		if err = ssrd.ILimiter.UpLimit(uidInt, n); err != nil {
-			return nil, nil, nil, err
+		if !ssrd.ILimiter.AllowUp(uidInt, n) {
+			return nil, nil, nil, nil
 		}
 	}
 	return result, []byte(uidPack), addr, err
@@ -313,11 +316,12 @@ func (ssrd *ShadowsocksRDecorate) ReadFrom() (data, uid []byte, addr net.Addr, e
 }
 
 func (ssrd *ShadowsocksRDecorate) WriteTo(p, uid []byte, addr net.Addr) error {
-	// apply download rate limiting
+	// apply download rate limiting — non-blocking: discard over-limit UDP packet so the shared loop
+	// continues processing other users without being stalled by a single user's token bucket.
 	if ssrd.ILimiter != nil {
 		uidInt := int(binaryx.LEBytesToUInt32([]byte(uid)))
-		if err := ssrd.ILimiter.DownLimit(uidInt, len(p)); err != nil {
-			return err
+		if !ssrd.ILimiter.AllowDown(uidInt, len(p)) {
+			return nil
 		}
 	}
 	data, err := ssrd.protocol.ServerUDPPreEncrypt(p, uid)

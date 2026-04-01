@@ -7,6 +7,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/time/rate"
 	"sync"
+	"time"
 )
 
 var (
@@ -66,6 +67,7 @@ func (l *Limit) Del(uid int) {
 	defer l.gLocker.Unlock()
 	logrus.Infof("limit remove %v", uid)
 	delete(l.upLimits, uid)
+	delete(l.downLimits, uid)
 }
 
 func (l *Limit) UpLimit(uid, n int) error {
@@ -87,4 +89,22 @@ func (l *Limit) Wait(uid, n int) error {
 		return l.upLimits[uid].WaitN(context.Background(), n)
 	}
 	return nil
+}
+
+func (l *Limit) AllowUp(uid, n int) bool {
+	l.gLocker.Lock()
+	defer l.gLocker.Unlock()
+	if l.upLimits[uid] != nil {
+		return l.upLimits[uid].AllowN(time.Now(), n)
+	}
+	return true
+}
+
+func (l *Limit) AllowDown(uid, n int) bool {
+	l.gLocker.Lock()
+	defer l.gLocker.Unlock()
+	if l.downLimits[uid] != nil {
+		return l.downLimits[uid].AllowN(time.Now(), n)
+	}
+	return true
 }
