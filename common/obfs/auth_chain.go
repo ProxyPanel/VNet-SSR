@@ -80,11 +80,11 @@ type AuthChainA struct {
 	HasSentHeader  bool
 	HasRecvHeader  bool
 	ClientID       int
-	ConnectionID   int
+	ConnectionID   uint32
 	MaxTimeDif     int
 	Salt           []byte
-	PackID         int
-	RecvID         int
+	PackID         uint32
+	RecvID         uint32
 	UserID         []byte
 	UserIDNum      int
 	UserKey        []byte
@@ -171,7 +171,7 @@ func (a *AuthChainA) ClientPostDecrypt(buf []byte) (result []byte, err error) {
 	a.RecvBuf = bytesx.ContactSlice(a.RecvBuf, buf)
 	result = []byte{}
 	for len(a.RecvBuf) > 4 {
-		macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(uint32(a.RecvID)))
+		macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(a.RecvID))
 		dataLen := int(binaryx.LEBytesToUint16(a.RecvBuf[:2]) ^ binaryx.LEBytesToUint16(a.LastServerHash[14:16]))
 		randLen := a.rndDataLen(dataLen, a.LastServerHash, a.RandomServer)
 		length := dataLen + randLen
@@ -207,7 +207,7 @@ func (a *AuthChainA) ClientPostDecrypt(buf []byte) (result []byte, err error) {
 			a.GetServerInfo().SetTCPMss(int(binaryx.LEBytesToUint16(result[:2])))
 			result = result[2:]
 		}
-		a.RecvID = (a.RecvID + 1) & 0xFFFFFFFF
+		a.RecvID++
 		a.RecvBuf = a.RecvBuf[length+4:]
 	}
 	return result, nil
@@ -342,7 +342,7 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 		} else if core.GetApp().GetObfsProtocolService().Insert(a.UserID, int(clientId), int(connectionId)) {
 			a.HasRecvHeader = true
 			a.ClientID = int(clientId)
-			a.ConnectionID = int(connectionId)
+			a.ConnectionID = connectionId
 		} else {
 			log.Info("%s: auth fail, data %s", a.NoCompatibleMethod, hex.EncodeToString(result))
 			result, sendback = a.NotMatchReturn(a.RecvBuf)
@@ -363,7 +363,7 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 	}
 
 	for len(a.RecvBuf) > 4 {
-		macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(uint32(a.RecvID)))
+		macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(a.RecvID))
 		dataLen := binaryx.LEBytesToUint16(a.RecvBuf[:2]) ^ binaryx.LEBytesToUint16(a.LastClientHash[14:16])
 		randLen := a.rndDataLen(int(dataLen), a.LastClientHash, a.RandomClient)
 		length := int(dataLen) + randLen
@@ -392,7 +392,7 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 				return nil, false, errors.WithStack(errors.New("server_post_decrype data uncorrect checksum"))
 			}
 		}
-		a.RecvID = (a.RecvID + 1) & 0xFFFFFFFF
+		a.RecvID++
 		pos := 2
 		if dataLen > 0 && randLen > 0 {
 			pos = 2 + a.rndStartPos(randLen, a.RandomClient)
@@ -410,7 +410,7 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 	}
 
 	if len(result) > 0 {
-		core.GetApp().GetObfsProtocolService().Update(a.UserID, a.ClientID, a.ConnectionID)
+		core.GetApp().GetObfsProtocolService().Update(a.UserID, a.ClientID, int(a.ConnectionID))
 	}
 	return result, sendback, nil
 }
@@ -620,12 +620,12 @@ func (a *AuthChainA) packClientData(buf []byte) ([]byte, error) {
 		return nil, err
 	}
 	data := a.rndData(len(buf), buf, a.LastClientHash, a.RandomClient)
-	macKey := bytesx.ContactSlice(a.UserKey, binaryx.BEUInt32ToBytes(uint32((a.PackID))))
+	macKey := bytesx.ContactSlice(a.UserKey, binaryx.BEUInt32ToBytes(a.PackID))
 	length := len(buf) ^ int(binaryx.LEBytesToUint16(a.LastClientHash[14:]))
 	data = bytesx.ContactSlice(binaryx.LEUInt16ToBytes(uint16(length)), data)
 	a.LastClientHash = hmacmd5(macKey, data)
 	data = bytesx.ContactSlice(data, a.LastClientHash[:2])
-	a.PackID = (a.PackID + 1) & 0xFFFFFFFF
+	a.PackID++
 	return data, nil
 }
 
@@ -635,12 +635,12 @@ func (a *AuthChainA) packServerData(buf []byte) ([]byte, error) {
 		return nil, err
 	}
 	data := a.rndData(len(buf), buf, a.LastServerHash, a.RandomServer)
-	macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(uint32(a.PackID)))
+	macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(a.PackID))
 	length := len(buf) ^ int(binaryx.LEBytesToUint16(a.LastServerHash[14:]))
 	data = bytesx.ContactSlice(binaryx.LEUInt16ToBytes(uint16(length)), data)
 	a.LastServerHash = hmacmd5(macKey, data)
 	data = bytesx.ContactSlice(data, a.LastServerHash[:2])
-	a.PackID = (a.PackID + 1) & 0xFFFFFFFF
+	a.PackID++
 	return data, nil
 }
 

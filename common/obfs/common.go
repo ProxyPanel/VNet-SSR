@@ -195,7 +195,7 @@ type ObfsAuthChainData struct {
 	Name          string
 	UserID        map[string]*cache.LRU
 	LocalClientId []byte
-	ConnectionID  int
+	ConnectionID  uint32
 	MaxClient     int
 	MaxBuffer     int
 }
@@ -284,21 +284,21 @@ func (o *ObfsAuthChainData) AuthData() []byte {
 	if o.LocalClientId == nil || len(o.LocalClientId) == 0 {
 		o.LocalClientId = randomx.RandomBytes(4)
 		//log.Debug("local_client_id %s", hex.EncodeToString(o.ObfsAuthChainDato.LocalClientId))
-		o.ConnectionID = int(binaryx.LEBytesToUInt32(randomx.RandomBytes(4)) & 0xFFFFFFFF)
+		o.ConnectionID = binaryx.LEBytesToUInt32(randomx.RandomBytes(4))
 	}
 	o.ConnectionID++
 	return bytesx.ContactSlice(
 		binaryx.LEUint32ToBytes(uint32(utcTime)),
 		o.LocalClientId,
-		binaryx.LEUint32ToBytes(uint32(o.ConnectionID)),
+		binaryx.LEUint32ToBytes(o.ConnectionID),
 	)
 }
 
-func (o *ObfsAuthChainData) GetConnectionID() int {
+func (o *ObfsAuthChainData) GetConnectionID() uint32 {
 	return o.ConnectionID
 }
 
-func (o *ObfsAuthChainData) SetConnectionID(connectionID int) {
+func (o *ObfsAuthChainData) SetConnectionID(connectionID uint32) {
 	o.ConnectionID = connectionID
 }
 

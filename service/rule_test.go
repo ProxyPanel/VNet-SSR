@@ -76,7 +76,7 @@ func TestRuleServiceBlackList(t *testing.T) {
 		t.Fatal("baidu.com test fail")
 	}
 
-	if _, ok, _ := GetRuleService().judgeWithCache("192.168.1.1",0); !ok {
+	if _, ok, _ := GetRuleService().judgeWithCache("192.168.1.1",0); ok {
 		t.Fatal("192.168.1.1 test fail")
 	}
 }

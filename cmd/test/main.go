@@ -23,7 +23,7 @@ func Test2() {
 	TestShadowsocksr()
 	// Wait for interrupt signal to gracefully shutdown the server with
 	// a timeout of 5 seconds.
-	quit := make(chan os.Signal)
+	quit := make(chan os.Signal, 1)
 	// kill (no param) default send syscall.SIGTERM
 	// kill -2 is syscall.SIGINT
 	// kill -9 is syscall.SIGKILL but can't be catch, so don't need add it
@@ -61,7 +61,6 @@ func TestShadowsocksr() {
 	//server.AddUser(1200, "killer")
 	if err := server.Start();err != nil{
 		panic(err)
-		return
 	}
 	//// Wait for interrupt signal to gracefully shutdown the server with
 	//// a timeout of 5 seconds.

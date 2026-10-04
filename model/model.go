@@ -27,7 +27,7 @@ type UserInfo struct {
 
 type UserTraffic struct {
 	Uid       int   `json:"uid"`
-	Upload    int64 `json:"upload"'`
+	Upload    int64 `json:"upload"`
 	Download  int64 `json:"download"`
 	UpSpeed   int64 `json:"upspeed"`
 	DownSpeed int64 `json:"downspeed"`

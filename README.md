@@ -4,13 +4,25 @@
 Vnet是一个网络工具,在某些网络条件受到限速的情况根据算法提高网络服务.
 
 ## 编译方式
-预安装: [Go语言](https://golang.org/), [Bazel](https://docs.bazel.build/)
+预安装: [Go语言](https://golang.org/) 1.26 及以上（go.mod 里的 go 指令由依赖树的最低要求决定）
+
+只编译当前平台：
 ```sh
-rm -rf vent
-git clone https://github.com/ProxyPanel/VNet-SSR.git vent && cd vent
-GO111MODULE=off go get -v ./...
-bazel build --action_env=PATH=$PATH --action_env=SPWD=$PWD --action_env=GOPATH=$(go env GOPATH) --action_env=GOCACHE=$(go env GOCACHE) --spawn_strategy local //release:vnet_linux_amd64_package
+go build -o vnet ./cmd/shadowsocksr-server
 ```
+
+拉不到 proxy.golang.org 时用模块镜像：
+```sh
+GOPROXY=https://goproxy.cn,direct go build -o vnet ./cmd/shadowsocksr-server
+```
+
+交叉编译全部目标平台，产物落在 bin/：
+```sh
+make
+make clean
+```
+
+目标平台：darwin/amd64、freebsd/386、freebsd/amd64、linux/386、linux/amd64、linux/arm、linux/arm64、linux/mips、linux/mipsle、linux/mips64、linux/mips64le（mips 系用 GOMIPS=softfloat）、windows/386、windows/amd64。
 
 ## 支持加密方式
 ```

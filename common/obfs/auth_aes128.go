@@ -54,12 +54,12 @@ type AuthAes128Sha1 struct {
 	HasRecvHeader bool
 	HasSentHeader bool
 	ClientID      int
-	ConnectionID  int
+	ConnectionID  uint32
 	MaxTimeDif    int
 	Salt          []byte
 	ExtraWaitSize int
-	PackID        int
-	RecvID        int
+	PackID        uint32
+	RecvID        uint32
 	UserID        []byte
 	UserKey       []byte
 	LastRndLen    int
@@ -153,12 +153,12 @@ func (a *AuthAes128Sha1) rndData(bufSize, fullBufSize int) []byte {
 func (a *AuthAes128Sha1) packData(buf []byte, fullBufSize int) []byte {
 	data := bytesx.ContactSlice(a.rndData(len(buf), fullBufSize), buf)
 	dataLen := len(data) + 8
-	macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(uint32(a.PackID)))
+	macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(a.PackID))
 	//log.Debug("packData macKey: %s",hex.EncodeToString(macKey))
 	mac := hmacSum(macKey, binaryx.LEUInt16ToBytes(uint16(dataLen)), a.HashFunc)[:2]
 	data = bytesx.ContactSlice(binaryx.LEUInt16ToBytes(uint16(dataLen)), mac, data)
 	data = bytesx.ContactSlice(data, hmacSum(macKey, data, a.HashFunc)[:4])
-	a.PackID = (a.PackID + 1) & 0xFFFFFFFF
+	a.PackID++
 	//log.Debug("packData result: %s",hex.EncodeToString(data))
 	return data
 }
@@ -252,7 +252,7 @@ func (a *AuthAes128Sha1) ClientPostDecrypt(buf []byte) (result []byte, err error
 	a.RecvBuf = bytesx.ContactSlice(a.RecvBuf, buf)
 	result = []byte{}
 	for len(a.RecvBuf) > 4 {
-		macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(uint32(a.RecvID)))
+		macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(a.RecvID))
 		mac := hmacSum(macKey, a.RecvBuf[:2], a.HashFunc)[:2]
 		if !bytes.Equal(mac, a.RecvBuf[2:4]) {
 			return nil, errors.New("client_post_decrypt data uncorrect mac")
@@ -272,7 +272,7 @@ func (a *AuthAes128Sha1) ClientPostDecrypt(buf []byte) (result []byte, err error
 			return nil, errors.New("client_post_decrypt data uncorrect checksum")
 		}
 
-		a.RecvID = (a.RecvID + 1) & 0xFFFFFFFF
+		a.RecvID++
 		pos := int(a.RecvBuf[4])
 		if pos < 255 {
 			pos += 4
@@ -388,7 +388,7 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 			a.HasRecvHeader = true
 			result = a.RecvBuf[31+rndLen : length-4]
 			a.ClientID = int(clientId)
-			a.ConnectionID = int(connectionId)
+			a.ConnectionID = connectionId
 		} else {
 			log.Info("%s: auth fail, data %s", a.NoCompatibleMethod, hex.EncodeToString(result))
 			result, sendback = a.NotMatchReturn(a.RecvBuf)
@@ -400,7 +400,7 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 	}
 	for len(a.RecvBuf) > 4 {
 		//log.Debug("ServerPostDecrypt data: %s",hex.EncodeToString(a.RecvBuf))
-		macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(uint32(a.RecvID)))
+		macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(a.RecvID))
 		//log.Debug("ServerPostDecrypt decode packData macKey: %s",hex.EncodeToString(macKey))
 		mac := hmacSum(macKey, a.RecvBuf[:2], a.HashFunc)[:2]
 		if !bytes.Equal(mac, a.RecvBuf[2:4]) {
@@ -439,7 +439,7 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 			return []byte{}, false, errors.New("server_post_decrype data uncorrect checksum")
 		}
 
-		a.RecvID = (a.RecvID + 1) & 0xFFFFFFFF
+		a.RecvID++
 		pos := int(a.RecvBuf[4])
 		if pos < 255 {
 			pos += 4
@@ -453,7 +453,7 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 		}
 	}
 	if len(result) > 0 {
-		core.GetApp().GetObfsProtocolService().Update(a.UserID, a.ClientID, a.ConnectionID)
+		core.GetApp().GetObfsProtocolService().Update(a.UserID, a.ClientID, int(a.ConnectionID))
 	}
 	return result, sendback, nil
 }

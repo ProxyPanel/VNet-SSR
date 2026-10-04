@@ -91,12 +91,12 @@ func checkRequired() bool {
 			switch item.Type {
 			case reflect.String:
 				if viper.GetString(item.Name) == "" {
-					log.Warn("miss param:" + item.Name)
+					log.Warn("miss param:%s", item.Name)
 					return false
 				}
 			case reflect.Int:
 				if viper.GetInt(item.Name) == 0 {
-					log.Warn("miss param:" + item.Name)
+					log.Warn("miss param:%s", item.Name)
 					return false
 				}
 			}

@@ -58,4 +58,5 @@ func ExampleMustUnquote() {
 	test := "aaa\\u6388\\u6743\\u9a8c\\u8bc1\\u5931\\u8d25\\uff1a\\u8bf7\\u6c42\\u53d7\\u9650"
 	fmt.Println(UnicodeToUtf8(test))
 	//Output:
+	//aaa授权验证失败：请求受限
 }

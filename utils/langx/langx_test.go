@@ -16,6 +16,7 @@ func ExampleFirstResult() {
 	fmt.Println(FirstResult(Abc))
 
 	// Output:
+	// a
 }
 func Abc() (string,string){
 	return "a","b"

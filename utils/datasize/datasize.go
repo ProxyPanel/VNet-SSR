@@ -249,13 +249,13 @@ ParseLoop:
 
 Overflow:
 	*b = ByteSize(maxUint64)
-	return &strconv.NumError{fnUnmarshalText, string(t0), strconv.ErrRange}
+	return &strconv.NumError{Func: fnUnmarshalText, Num: string(t0), Err: strconv.ErrRange}
 
 SyntaxError:
 	*b = 0
-	return &strconv.NumError{fnUnmarshalText, string(t0), strconv.ErrSyntax}
+	return &strconv.NumError{Func: fnUnmarshalText, Num: string(t0), Err: strconv.ErrSyntax}
 
 BitsError:
 	*b = 0
-	return &strconv.NumError{fnUnmarshalText, string(t0), ErrBits}
+	return &strconv.NumError{Func: fnUnmarshalText, Num: string(t0), Err: ErrBits}
 }

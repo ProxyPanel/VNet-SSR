@@ -24,4 +24,7 @@ func ExampleGetBuf() {
 	//cap: 4096
 	//len: 3072
 	//cap: 3072
+	//0
+	//len: 3072
+	//cap: 3072
 }

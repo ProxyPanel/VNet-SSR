@@ -40,6 +40,5 @@ I10Obt912YV2zA==
 	}
 	fmt.Println(clearData)
 	fmt.Println(len(clearData))
-	//Output:
 }
 

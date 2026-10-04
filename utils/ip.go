@@ -13,7 +13,7 @@ var ipCache = make(map[string]*IP)
 
 type IPInfo struct {
 	Code int `json:"code"`
-	Data IP  `json:"data`
+	Data IP  `json:"data"`
 }
 
 type IP struct {

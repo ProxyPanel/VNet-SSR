@@ -54,7 +54,6 @@ func main() {
 
 		if err := service.Start(); err != nil {
 			panic(err)
-			return
 		}
 
 		server.StartServer(nodeInfo.PushPort, nodeInfo.Secret)
