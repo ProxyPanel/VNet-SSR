@@ -3,17 +3,16 @@ module github.com/ProxyPanel/VNet-SSR
 go 1.26.0
 
 require (
-	github.com/asaskevich/EventBus v0.0.0-20200907212545-49d423059eef
-	github.com/dustin/go-humanize v1.0.0
+	github.com/dustin/go-humanize v1.1.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/pkg/errors v0.9.1
-	github.com/rs/xid v1.2.1
+	github.com/rs/xid v1.6.0
 	github.com/shirou/gopsutil v3.21.11+incompatible
 	github.com/sirupsen/logrus v1.10.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	github.com/tidwall/gjson v1.19.0
-	gitlab.com/yawning/chacha20.git v0.0.0-20190903091407-6d1cb28dc72c
+	github.com/tidwall/gjson v1.20.0
+	gitlab.com/yawning/chacha20.git v0.0.0-20230427033715-7877545b1b37
 	golang.org/x/crypto v0.57.0
 	golang.org/x/time v0.16.0
 	gopkg.in/resty.v1 v1.12.0
