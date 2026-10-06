@@ -8,6 +8,7 @@ fix: an algorithm name this backend doesn't implement now returns an error inste
 update: startup no longer depends on api.ip.sb — the public address is recorded by the panel from the heartbeat's source IP instead
 update: every direct Go dependency is now at its latest release tag
 update: chacha20 tracks the 2023 release of yawning's implementation, which gates its SSSE3 assembly on the SSSE3 feature bit instead of SSE3 — the keystream is unchanged, pinned by golden vectors
+fix: UDP datagrams over aes-128/192/256-cfb came out garbled beyond the first 16 bytes — the packet path asked for an encrypter where the TCP path asks for a decrypter
 
 ## 2020-12-13 03:38:56
 version 2.1.0

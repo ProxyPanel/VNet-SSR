@@ -89,7 +89,8 @@ func (c *streamPacket) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
 		return n, addr, ErrShortPacket
 	}
 
-	decryptr, err := c.NewStream(c.key, b[:ivLen], 0)
+	// 第三参必须是解密：CFB 的反馈取上一段密文，用加密器解会从第二个块起错位
+	decryptr, err := c.NewStream(c.key, b[:ivLen], 1)
 	if err != nil {
 		return n, addr, err
 	}

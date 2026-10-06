@@ -1,76 +1,68 @@
 package ciphers
 
 import (
+	"bytes"
 	"crypto/rand"
 	"io"
 	"net"
-	"os"
-	"runtime/pprof"
 	"testing"
 	"time"
-
-	"github.com/ProxyPanel/VNet-SSR/common/log"
-	"github.com/ProxyPanel/VNet-SSR/utils/datasize"
 )
 
+// 每包都带随机 IV/salt，两端同口令即可对称往返。
+// 端口取 ephemeral、读必须带 deadline：固定端口和裸 sleep 会让这一项在 CI 上随机挂起。
+func Test_Packet(t *testing.T) {
+	for _, method := range []string{"aes-256-cfb", "salsa20", "chacha20-ietf-poly1305", "aes-128-gcm"} {
+		t.Run(method, func(t *testing.T) {
+			server := decoratePacket(t, method)
+			defer server.Close()
+			client := decoratePacket(t, method)
+			defer client.Close()
 
-func init() {
+			payload := make([]byte, 1400)
+			if _, err := io.ReadFull(rand.Reader, payload); err != nil {
+				t.Fatal(err)
+			}
 
+			buf := make([]byte, 4096)
+			// 16/17 是 AES-CFB 的反馈块边界，历史上这里解错过
+			for _, size := range []int{1, 16, 17, 63, 1400} {
+				if _, err := client.WriteTo(payload[:size], server.LocalAddr()); err != nil {
+					t.Fatalf("%s 发送 %d 字节失败：%s", method, size, err)
+				}
+
+				deadline := time.Now().Add(3 * time.Second)
+				if err := server.SetReadDeadline(deadline); err != nil {
+					t.Fatalf("%s 设置读超时失败：%s", method, err)
+				}
+
+				// 明文长度只有接收侧知道：AEAD 的 WriteTo 返回的是密文长度
+				n, _, err := server.ReadFrom(buf)
+				if err != nil {
+					t.Fatalf("%s 接收 %d 字节失败：%s", method, size, err)
+				}
+				if n != size {
+					t.Fatalf("%s 收到 %d 字节，应为 %d", method, n, size)
+				}
+				if !bytes.Equal(buf[:n], payload[:size]) {
+					t.Fatalf("%s 的 %d 字节往返内容不一致", method, size)
+				}
+			}
+		})
+	}
 }
 
-//TODO goroutine pool
-func Test_Packet(t *testing.T) {
-	log.Info("aa")
-	listener, err := net.ListenPacket("udp", "0.0.0.0:8080")
-	if err != nil {
-		log.Err(err)
-	}
-	dlistener, err := CipherPacketDecorate("killer", "aes-128-gcm", listener)
-	if err != nil {
-		log.Err(err)
-	}
-	buf := make([]byte, 64*1024)
-	go func() {
-		for {
-			_, _, err := dlistener.ReadFrom(buf)
-			if err != nil {
-				log.Err(err)
-				continue
-			}
-			// log.Info("len: %d,addrx %v,data: %s\n", n, addrx, string(buf[:n]))
-		}
-	}()
-	log.Info("开始发送数据:")
-	raddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:8080")
-	if err != nil {
-		log.Err(err)
-		return
-	}
-	conn, err := net.ListenPacket("udp", "0.0.0.0:8081")
-	if err != nil {
-		log.Err(err)
-		return
-	}
-	dconn, err := CipherPacketDecorate("killer", "aes-128-gcm", conn)
-	if err != nil {
-		log.Err(err)
-		return
-	}
-	tmp := make([]byte, 4*1024)
-	if _, err := io.ReadFull(rand.Reader, tmp); err != nil {
-		t.Error(err)
-	}
-	f, _ := os.Create("a.pprof")
-	pprof.StartCPUProfile(f)
-	defer pprof.StopCPUProfile()
-	start := time.Now()
-	var count uint64 = 0
-	for time.Now().Second()-start.Second() < 5 {
-		count += 4096
-		go dconn.WriteTo(tmp, raddr)
-	}
-	size, _ := datasize.HumanSize(count / uint64(5))
-	log.Info("%s per second", size)
+func decoratePacket(t *testing.T, method string) net.PacketConn {
+	t.Helper()
 
-	time.Sleep(1 * time.Second)
+	raw, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("监听失败：%s", err)
+	}
+	conn, err := CipherPacketDecorate("test password", method, raw)
+	if err != nil {
+		raw.Close()
+		t.Fatalf("%s 装饰失败：%s", method, err)
+	}
+	return conn
 }
