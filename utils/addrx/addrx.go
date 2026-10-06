@@ -2,7 +2,8 @@ package addrx
 
 import (
 	"github.com/ProxyPanel/VNet-SSR/utils/langx"
-	"io/ioutil"
+	"github.com/pkg/errors"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -75,21 +76,32 @@ func SplitPortFromAddr(addr string) int {
 	return langx.FirstResult(strconv.Atoi, port).(int)
 }
 
-func GetPublicIp() (string, error) {
-	client := http.Client{
-		Timeout: time.Duration(3 * time.Second),
-	}
-	res, err := client.Get("https://api.ip.sb/ip")
+// GetPublicIp 按指定探测地址取本机对外地址；地址决定看到哪一族（v4 或 v6）。
+// 结果必须过 net.ParseIP：限流时这些站点会回 HTML，非空不代表拿到了地址。
+func GetPublicIp(url string) (string, error) {
+	client := http.Client{Timeout: 3 * time.Second}
+
+	res, err := client.Get(url)
 	if err != nil {
-		return "", err
+		return "", errors.Wrap(err, "public ip request error")
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		return "", errors.Errorf("public ip status: %d", res.StatusCode)
 	}
 
-	ip, err := ioutil.ReadAll(res.Body)
+	body, err := io.ReadAll(io.LimitReader(res.Body, 128))
 	if err != nil {
-		return "", err
+		return "", errors.Wrap(err, "read public ip error")
 	}
 
-	return strings.Trim(string(ip), "\n"), nil
+	ip := strings.TrimSpace(string(body))
+	if parsed := net.ParseIP(ip); parsed == nil {
+		return "", errors.Errorf("public ip is not an address: %q", ip)
+	}
+
+	return ip, nil
 }
 
 // func GetAddressType(addrx string) string {

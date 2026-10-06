@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/ProxyPanel/VNet-SSR/api/client"
 	"github.com/ProxyPanel/VNet-SSR/common/log"
 	"github.com/ProxyPanel/VNet-SSR/common/obfs"
 	"github.com/ProxyPanel/VNet-SSR/core"
@@ -136,7 +137,7 @@ func UsersAdd(c *gin.Context) {
 		return
 	}
 
-	if err := service.GetSSRManager().AddUsers(users); err != nil {
+	if err := service.GetSSRManager().ApplyUsers(users); err != nil {
 		fail(c, err)
 		return
 	}
@@ -205,6 +206,12 @@ func NodeReload(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	// 先把新集合取到手再改配置：面板此刻不可达时保持原样，不把已经在跑的服务打空
+	users, err := client.GetUserList()
+	if err != nil {
+		fail(c, errors.Wrap(err, "get user list failed, current services kept"))
+		return
+	}
 	core.GetApp().SetNodeInfo(&nodeInfo)
 	core.GetApp().SetObfsProtocolService(obfs.NewObfsAuthChainData(nodeInfo.Protocol))
 	if nodeInfo.ClientLimit != 0 {
@@ -213,7 +220,7 @@ func NodeReload(c *gin.Context) {
 	} else {
 		log.Info("ignore client limit, because client_limit is zero, use default limit is 64")
 	}
-	if err := service.Reload(); err != nil {
+	if err := service.Reload(users); err != nil {
 		fail(c, err)
 		return
 	}

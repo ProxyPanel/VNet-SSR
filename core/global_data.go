@@ -2,8 +2,6 @@ package core
 
 import (
 	"github.com/ProxyPanel/VNet-SSR/model"
-	"github.com/robfig/cron"
-	"github.com/stackimpact/stackimpact-go"
 )
 
 var (
@@ -11,10 +9,7 @@ var (
 )
 
 func NewApp() *App {
-	app := new(App)
-	app.cron = cron.New()
-	app.cron.Start()
-	return app
+	return new(App)
 }
 
 func GetApp() *App {
@@ -28,22 +23,11 @@ type App struct {
 	apiHost             string
 	key                 string
 	host                string
-	publicIP            string
-	cron                *cron.Cron
-	agent               *stackimpact.Agent
 	obfsProtocolService ObfsProtocolService
 }
 
 func (a *App) Init() error {
 	return nil
-}
-
-func (a *App) Cron() *cron.Cron {
-	return a.cron
-}
-
-func (a *App) SetCron(cron *cron.Cron) {
-	a.cron = cron
 }
 
 func (a *App) UserInfos() []*model.UserInfo {
@@ -92,22 +76,6 @@ func (a *App) ApiHost() string {
 
 func (a *App) SetApiHost(apiHost string) {
 	a.apiHost = apiHost
-}
-
-func (a *App) SetPublicIP(publicIp string) {
-	a.publicIP = publicIp
-}
-
-func (a *App) GetPublicIP() string {
-	return a.publicIP
-}
-
-func (a *App) SetAgent(agent *stackimpact.Agent) {
-	a.agent = agent
-}
-
-func (a *App) GetAgent() *stackimpact.Agent {
-	return a.agent
 }
 
 func (a *App) SetObfsProtocolService(obfsProtocolService ObfsProtocolService) {

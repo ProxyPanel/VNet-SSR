@@ -1,5 +1,11 @@
 package obfs
 
+import (
+	"sort"
+
+	"github.com/pkg/errors"
+)
+
 type PlainFactory func(string) (Plain,error)
 
 // Plain interface
@@ -36,5 +42,24 @@ func registerMethod(method string, factory PlainFactory) {
 }
 
 func GetObfs(method string) (Plain,error){
-	return method_supported[method](method)
+	factory, exist := method_supported[method]
+	if !exist { // 直接调用取不到的工厂是 nil 调用：会在每条连接里 panic，被连接级 recover 吞成一行日志，
+		// 面板只看到心跳正常、在线为 0，节点侧却已经全线连不上
+		return nil, errors.Errorf("unsupported protocol or obfs: %s", method)
+	}
+
+	return factory(method)
+}
+
+// RegisteredNames 返回注册表里的全部协议/混淆名，供 docs/capabilities.json 生成与漂移检查使用
+func RegisteredNames() []string {
+	names := make([]string, 0, len(method_supported))
+
+	for name := range method_supported {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	return names
 }

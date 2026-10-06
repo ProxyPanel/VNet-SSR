@@ -6,7 +6,6 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/api/client"
 	"github.com/ProxyPanel/VNet-SSR/common/log"
 	"github.com/ProxyPanel/VNet-SSR/core"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,20 +120,42 @@ func (s *SSRManager) Download(port int, n int64) {
 	s.trafficLock.Unlock()
 }
 
+// ReportTraffic 取走待上报的增量快照；发送失败由 requeueTraffic 并回——清账发生在发送之前，
+// 这一分钟的字节在面板侧只有一份记录，丢了就再也补不回来
 func (s *SSRManager) ReportTraffic() []*model.UserTraffic {
 	s.trafficLock.Lock()
+	defer s.trafficLock.Unlock()
+
 	reportData := s.traffic
 	s.traffic = make(map[int]*model.UserTraffic)
+
 	convertReportData := make([]*model.UserTraffic, 0, len(reportData))
-	for key, value := range reportData {
-		if value.Download+value.Upload < 50*1024 {
+	for _, value := range reportData {
+		convertReportData = append(convertReportData, value)
+	}
+
+	return convertReportData
+}
+
+// requeueTraffic 把没送达的增量并回待上报表；uid 为 0 的是端口查不到账号的字节，面板不会收，留着只会越积越多
+func (s *SSRManager) requeueTraffic(data []*model.UserTraffic) {
+	s.trafficLock.Lock()
+	defer s.trafficLock.Unlock()
+
+	for _, value := range data {
+		if value.Uid <= 0 {
 			continue
 		}
-		convertReportData = append(convertReportData, value)
-		delete(s.traffic, key)
+
+		current := s.traffic[value.Uid]
+		if current == nil {
+			current = &model.UserTraffic{Uid: value.Uid}
+			s.traffic[value.Uid] = current
+		}
+
+		current.Upload += value.Upload
+		current.Download += value.Download
 	}
-	s.trafficLock.Unlock()
-	return convertReportData
 }
 
 func (s *SSRManager) Online(port int, ip string) {
@@ -160,14 +181,42 @@ func (s *SSRManager) Online(port int, ip string) {
 
 func (s *SSRManager) ReportOnline() []*model.NodeOnline {
 	s.onlineLock.Lock()
+	defer s.onlineLock.Unlock()
+
 	reportData := s.online
 	convertReportData := make([]*model.NodeOnline, 0, len(reportData))
 	for _, value := range reportData {
 		convertReportData = append(convertReportData, value)
 	}
 	s.online = make(map[int]*model.NodeOnline)
-	s.onlineLock.Unlock()
+
 	return convertReportData
+}
+
+// requeueOnline 把没送达的在线记录并回待上报表，IP 去重沿用 Online() 的拼接判据
+func (s *SSRManager) requeueOnline(data []*model.NodeOnline) {
+	s.onlineLock.Lock()
+	defer s.onlineLock.Unlock()
+
+	for _, value := range data {
+		current := s.online[value.Uid]
+		if current == nil {
+			current = &model.NodeOnline{Uid: value.Uid}
+			s.online[value.Uid] = current
+		}
+
+		for _, ip := range strings.Split(value.IP, ",") {
+			if ip == "" || strings.Contains(current.IP, ip) {
+				continue
+			}
+
+			if current.IP == "" {
+				current.IP = ip
+			} else {
+				current.IP = current.IP + "," + ip
+			}
+		}
+	}
 }
 
 func (s *SSRManager) ReportNodeStatus() model.NodeStatus {
@@ -209,22 +258,79 @@ func (s *SSRManager) NewShadowsocksRProxy(port int, method, passwd, protocol, pr
 	return shadowsocksRProxy
 }
 
-func (s *SSRManager) AddUsers(users []*model.UserInfo) error {
-	uids := make([]int, 0, len(users))
+// ApplyUsers 落下面发的目标状态：enable=0 摘掉账号，已存在且字段变了就换，完全一致则不动。
+// 中途失败不回滚已应用的行——回滚等于把「更新过」的账号直接删掉，重投这批才是收敛路径。
+func (s *SSRManager) ApplyUsers(users []*model.UserInfo) error {
 	s.userTableLock.Lock()
 	defer s.userTableLock.Unlock()
+
+	var errs []string
+
 	for _, item := range users {
-		uids = append(uids, item.Uid)
-		err := s.addUser(item)
-		if err != nil {
-			for _, uid := range uids {
-				_, _ = s.delUserReturl(uid)
-			}
-			return err
+		if err := s.applyUser(item); err != nil {
+			errs = append(errs, fmt.Sprintf("uid %v: %s", item.Uid, err.Error()))
+
+			continue
 		}
-		logrus.Infof("add user,uid: %v, port: %v", item.Uid, item.Port)
+
+		logrus.Infof("apply user,uid: %v, port: %v", item.Uid, item.Port)
 	}
+
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+
 	return nil
+}
+
+// applyUser 调用方需持有 userTableLock
+func (s *SSRManager) applyUser(user *model.UserInfo) error {
+	if user.Enable == 0 {
+		// 本来就不在节点上时 delUserReturl 会报错，这里与「已摘掉」同义
+		_, _ = s.delUserReturl(user.Uid)
+
+		return nil
+	}
+
+	before := s.userTable[user.Uid]
+	if before == nil {
+		return s.addUser(user)
+	}
+	if *before == *user {
+		return nil
+	}
+
+	_, err := s.editUserReturn(user)
+
+	return err
+}
+
+// SyncUsers 用面板的全量集合收敛本地表：userList 只含有效账号，缺席即视为该摘掉
+func (s *SSRManager) SyncUsers(users []*model.UserInfo) error {
+	s.userTableLock.Lock()
+
+	keep := make(map[int]bool, len(users))
+	for _, item := range users {
+		keep[item.Uid] = true
+	}
+
+	var stale []int
+
+	for uid := range s.userTable {
+		if !keep[uid] {
+			stale = append(stale, uid)
+		}
+	}
+
+	s.userTableLock.Unlock()
+
+	for _, uid := range stale {
+		if err := s.DelUser(uid); err != nil {
+			logrus.Errorf("sync del user,uid: %v, error: %s", uid, err.Error())
+		}
+	}
+
+	return s.ApplyUsers(users)
 }
 
 func (s *SSRManager) DelUsers(uids []int) error {
@@ -259,7 +365,7 @@ func (s *SSRManager) AddUser(user *model.UserInfo) error {
 	logrus.Infof("add user,uid: %v, port: %v", user.Uid, user.Port)
 	s.userTableLock.Lock()
 	defer s.userTableLock.Unlock()
-	return s.addUser(user)
+	return s.applyUser(user)
 }
 
 func (s *SSRManager) addUser(user *model.UserInfo) error {
@@ -301,8 +407,7 @@ func (s *SSRManager) EditUser(user *model.UserInfo) error {
 	logrus.Infof("edit user,uid: %v, port: %v", user.Uid, user.Port)
 	s.userTableLock.Lock()
 	defer s.userTableLock.Unlock()
-	_, err := s.editUserReturn(user)
-	return err
+	return s.applyUser(user)
 }
 
 func (s *SSRManager) editUserReturn(user *model.UserInfo) (before *model.UserInfo, err error) {
@@ -349,17 +454,21 @@ func (s *SSRManager) delUserReturl(uid int) (user *model.UserInfo, err error) {
 		delete(s.userTable, uid)
 	} else {
 		server := s.Shadowsocksrs[port]
+		user = s.userTable[uid]
+
 		if server == nil {
 			logrus.WithFields(logrus.Fields{
 				"port": port,
 			}).Info("port is not exist")
-			return nil, nil
+			// 表里有行但端口上没有进程，是上一次添加失败留下的残行；留着会让禁用和删除都清不干净
+			delete(s.userTable, uid)
+
+			return user, nil
 		}
 
 		if err := server.Close(); err != nil {
 			return nil, err
 		}
-		user = s.userTable[uid]
 		delete(s.Shadowsocksrs, port)
 		delete(s.userTable, uid)
 	}
@@ -436,6 +545,8 @@ func (s *SSRManager) ReportTask() {
 			if len(traffic) > 0 {
 				if err := client.PostAllUserTraffic(traffic); err != nil {
 					logrus.Error(err)
+					// 快照已经清账，没送达的必须并回去，否则这一分钟的字节永久消失
+					s.requeueTraffic(traffic)
 				}
 			}
 			online := s.ReportOnline()
@@ -443,12 +554,24 @@ func (s *SSRManager) ReportTask() {
 			if len(online) > 0 {
 				if err := client.PostNodeOnline(online); err != nil {
 					logrus.Error(err)
+					s.requeueOnline(online)
 				}
 			}
 
 			log.Info("post node status")
 			if err := client.PostNodeStatus(s.ReportNodeStatus()); err != nil {
 				logrus.Error(err)
+			}
+		}
+		// 推送只是加速器：每 5 分钟按 If-None-Match 问一次全量集合，丢掉的推送最迟 5 分钟补上
+		if tick > 0 && tick%300 == 0 {
+			users, unchanged, err := client.SyncUserList()
+			if err != nil {
+				logrus.Error(err)
+			} else if !unchanged {
+				if err := s.SyncUsers(users); err != nil {
+					logrus.Error(err)
+				}
 			}
 		}
 		tick++
@@ -464,6 +587,18 @@ func (s *SSRManager) GetUids() []int {
 }
 
 func (s *SSRManager) Start() error {
+	log.Info("prepare get user list")
+	// load users
+	users, err := client.GetUserList()
+	if err != nil {
+		return errors.Wrap(err, "get user list error")
+	}
+
+	return s.startWith(users)
+}
+
+// startWith 按给定的全量集合重建服务：集合要在 Close 之前取好，取不到时当前服务原样保留
+func (s *SSRManager) startWith(users []*model.UserInfo) error {
 	s.Lock()
 	defer s.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -493,26 +628,17 @@ func (s *SSRManager) Start() error {
 				&server.ShadowsocksRArgs{})
 			err := s.Shadowsocksrs[port].Start()
 			if err != nil {
-				// TODO 错误处理
 				return err
 			}
 		}
 	}
 
-	log.Info("prepare get user list")
-	// load users
-	users, err := client.GetUserList()
-	if err != nil {
-		logrus.Fatal(fmt.Sprintf("get user list error: %s,%s", err.Error(), string(debug.Stack())))
-	}
 	logrus.WithFields(logrus.Fields{
 		"firstLoadUserCount": len(users),
 	}).Info("get user list success")
-	for i := 0; i < len(users); i++ {
-		if err := s.AddUser(users[i]); err != nil {
-			logrus.Error(err)
-			return err
-		}
+	// 单个端口冲突（两人同端口）不该挡住其余账号，其余人这轮已经生效
+	if err := s.ApplyUsers(users); err != nil {
+		logrus.Error(err)
 	}
 	go s.ReportTask()
 	return nil
@@ -541,12 +667,10 @@ func (s *SSRManager) Close() error {
 	return nil
 }
 
-func (s *SSRManager) Reload() error {
+// Restart 用调用方取好的全量集合重建服务；集合必须在 Close 之前取，取不到时当前服务原样保留
+func (s *SSRManager) Restart(users []*model.UserInfo) error {
 	if err := s.Close(); err != nil {
 		return err
 	}
-	if err := s.Start(); err != nil {
-		return err
-	}
-	return nil
+	return s.startWith(users)
 }

@@ -17,10 +17,6 @@ import (
 
 func main() {
 	logrus.SetLevel(logrus.InfoLevel)
-	ip, err := addrx.GetPublicIp()
-	if err != nil {
-		panic(err)
-	}
 	command.Execute(func() {
 		if err := core.GetApp().Init(); err != nil {
 			panic(err)
@@ -29,11 +25,9 @@ func main() {
 		core.GetApp().SetNodeId(viper.GetInt(command.NODE_ID))
 		core.GetApp().SetKey(viper.GetString(command.KEY))
 		core.GetApp().SetHost(viper.GetString(command.HOST))
-		core.GetApp().SetPublicIP(ip)
-		if core.GetApp().GetPublicIP() == "" {
-			panic("get public ip error,please try align")
+		if err := client.InitHost(); err != nil {
+			panic(err)
 		}
-		log.Info("get public ip %s", core.GetApp().GetPublicIP())
 
 		nodeInfo, err := client.GetNodeInfo()
 		if err != nil {
@@ -57,6 +51,24 @@ func main() {
 		}
 
 		server.StartServer(nodeInfo.PushPort, nodeInfo.Secret)
+		go probeEgress()
 		osx.WaitSignal()
 	})
+}
+
+// probeEgress 只打一行观测日志：这个值没有任何消费方，所以绝不能挡在启动路径上
+// （原先是解析配置之前同步 GET + panic，外部站点不可达时 systemd 会把进程拖进无限重启循环）
+func probeEgress() {
+	for _, probe := range []struct{ family, url string }{
+		{"ipv4", "https://api-ipv4.ip.sb/ip"},
+		{"ipv6", "https://api-ipv6.ip.sb/ip"},
+	} {
+		ip, err := addrx.GetPublicIp(probe.url)
+		if err != nil {
+			logrus.Warnf("探测对外地址(%s)失败: %s", probe.family, err.Error())
+			continue
+		}
+
+		logrus.Infof("探测到对外地址(%s): %s", probe.family, ip)
+	}
 }
