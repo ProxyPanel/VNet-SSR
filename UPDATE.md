@@ -6,6 +6,8 @@ update: user add/edit applies the pushed state by uid — enable=0 removes the a
 update: the full user list is re-synced every 5 minutes with If-None-Match, and a node reload keeps the running services when the panel is unreachable
 fix: an algorithm name this backend doesn't implement now returns an error instead of calling a nil factory in every connection
 update: startup no longer depends on api.ip.sb — the public address is recorded by the panel from the heartbeat's source IP instead
+update: every direct Go dependency is now at its latest release tag
+update: chacha20 tracks the 2023 release of yawning's implementation, which gates its SSSE3 assembly on the SSSE3 feature bit instead of SSE3 — the keystream is unchanged, pinned by golden vectors
 
 ## 2020-12-13 03:38:56
 version 2.1.0
