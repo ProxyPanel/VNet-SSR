@@ -1,0 +1,564 @@
+openapi: 3.0.3
+info:
+  title: VNet-SSR ↔ 面板 WebAPI 契约
+  version: 2.2.0
+  description: |
+    本后端与账号面板之间的双向接口。两个方向各有服务端：
+
+    * **面板侧**（`servers: panel`）：节点拉配置/用户列表，并上报流量、在线、心跳、审计命中。
+      前缀可为 `ssr/v1`、`web/v1`、`vnet/v2`（本后端实际使用 `ssr/v1`）。
+    * **节点侧**（`servers: node`）：面板反向推送用户与节点配置，监听 `node.push_port`。
+
+    鉴权：面板侧要求请求头 `key`（节点授权 key）与 `timestamp`（unix 秒，与面板时差 ≥300 秒即拒）；
+    节点侧要求请求头 `secret`（面板下发的节点 secret）。
+
+    单位约定（最容易对错的地方）：流量与限速一律 **字节**、字节/秒；时间戳一律 unix 秒。
+    面板数据库里 `speed_limit` 存字节/秒，但其展示 cast 读出来是 Mbps —— 下发给本后端必须是字节/秒，
+    出现小数（如 `12.5`）即为错误：`UserInfo.speed_limit` 是 `uint64`，绑定失败会让整条请求被拒。
+servers:
+  - url: https://panel.example.com/api
+    description: "面板宿主（sysConfig('web_api_url') ?: website_url），路径带协议前缀"
+  - url: http://NODE_HOST:PUSH_PORT/api
+    description: "本后端宿主（面板按 Node::pushAddresses() 逐个地址推送）"
+tags:
+  - name: panel
+    description: 面板实现、本后端调用
+  - name: node
+    description: 本后端实现、面板调用
+paths:
+  /ssr/v1/node/{node}:
+    get:
+      tags: [panel]
+      summary: 取节点自身配置
+      operationId: getNodeInfo
+      parameters:
+        - $ref: '#/components/parameters/NodePathId'
+        - $ref: '#/components/parameters/KeyHeader'
+        - $ref: '#/components/parameters/TimestampHeader'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: 节点配置
+          headers:
+            ETAG:
+              description: sha1(json_encode(data))，下一轮可带 If-None-Match 命中 304
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/NodeInfo'
+        '304':
+          description: 内容未变（响应体为空）
+        '400':
+          $ref: '#/components/responses/ParameterError'
+        '401':
+          $ref: '#/components/responses/ClockSkew'
+  /ssr/v1/userList/{node}:
+    get:
+      tags: [panel]
+      summary: 取该节点可用的用户集合
+      description: |
+        只含面板认为有效的账号（`status <> -1 且 enable = 1`，并按节点等级/用户组过滤），按 `id` 升序。
+        本后端在启动、reload、以及每 5 分钟的周期同步时拉取；日常增删靠面板推送。
+      operationId: getUserList
+      parameters:
+        - $ref: '#/components/parameters/NodePathId'
+        - $ref: '#/components/parameters/KeyHeader'
+        - $ref: '#/components/parameters/TimestampHeader'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: 用户数组；空数组表示「该节点当前无人可用」，与拉取失败必须区分
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/UserInfo'
+        '304':
+          description: 内容未变
+  /ssr/v1/userTraffic/{node}:
+    post:
+      tags: [panel]
+      summary: 上报用户流量增量
+      description: |
+        面板按 `node.traffic_rate` 倍率乘算后，在数据库侧 `u = u + …, d = d + …` 累加（不能先读后写）。
+        失效 uid 会被跳过并记日志，不影响同批其他账号。本后端在发送失败时把增量并回待上报表，
+        下一轮重发，绝不因发送失败丢账。
+      operationId: reportUserTraffic
+      parameters:
+        - $ref: '#/components/parameters/NodePathId'
+        - $ref: '#/components/parameters/KeyHeader'
+        - $ref: '#/components/parameters/TimestampHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/UserTraffic'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ack'
+        '400':
+          $ref: '#/components/responses/ParameterError'
+  /ssr/v1/nodeOnline/{node}:
+    post:
+      tags: [panel]
+      summary: 上报在线账号与其出口地址
+      description: |
+        同一账号在一轮里连过多个出口时，`ip` 用逗号拼在一个字符串里（面板的 `node_online_ip.ip` 列注释即为此约定）。
+        上报后本后端清空本地在线表，所以面板必须整批收下、只跳过失效账号——逐行存在性校验会让一整个分钟的在线数据丢失。
+      operationId: reportNodeOnline
+      parameters:
+        - $ref: '#/components/parameters/NodePathId'
+        - $ref: '#/components/parameters/KeyHeader'
+        - $ref: '#/components/parameters/TimestampHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/NodeOnline'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ack'
+  /ssr/v1/nodeStatus/{node}:
+    post:
+      tags: [panel]
+      summary: 上报节点心跳
+      operationId: reportNodeStatus
+      parameters:
+        - $ref: '#/components/parameters/NodePathId'
+        - $ref: '#/components/parameters/KeyHeader'
+        - $ref: '#/components/parameters/TimestampHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NodeStatus'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ack'
+  /ssr/v1/nodeRule/{node}:
+    get:
+      tags: [panel]
+      summary: 取审计规则
+      description: 本后端只实现 `reg`/`domain`/`ip` 三类；`protocol` 与 `unknown` 会被忽略。
+      operationId: getNodeRule
+      parameters:
+        - $ref: '#/components/parameters/NodePathId'
+        - $ref: '#/components/parameters/KeyHeader'
+        - $ref: '#/components/parameters/TimestampHeader'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: 规则集
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Rule'
+  /ssr/v1/trigger/{node}:
+    post:
+      tags: [panel]
+      summary: 上报命中审计规则的账号
+      operationId: reportTrigger
+      parameters:
+        - $ref: '#/components/parameters/NodePathId'
+        - $ref: '#/components/parameters/KeyHeader'
+        - $ref: '#/components/parameters/TimestampHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Trigger'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ack'
+  /v2/user/add/list:
+    post:
+      tags: [node]
+      summary: 按 uid 落目标状态（幂等）
+      description: |
+        `enable=0` 摘掉账号；已存在且内容一致则不动；内容有差异则重建。重复推同一批不会多出一份，
+        所以面板可以安全重投。任一行失败不会回滚其余行（回滚等于把刚更新的账号删掉），
+        错误在响应里聚合返回。
+      operationId: applyUsers
+      security:
+        - secretHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/UserInfo'
+      responses:
+        '200':
+          $ref: '#/components/responses/PushResult'
+  /v2/user/del/list:
+    post:
+      tags: [node]
+      summary: 批量摘除账号
+      operationId: deleteUsers
+      security:
+        - secretHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: integer
+                description: user id
+      responses:
+        '200':
+          $ref: '#/components/responses/PushResult'
+  /user/add:
+    post:
+      tags: [node]
+      summary: 落单个账号的目标状态
+      operationId: applyUser
+      security:
+        - secretHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserInfo'
+      responses:
+        '200':
+          $ref: '#/components/responses/PushResult'
+  /user/edit:
+    post:
+      tags: [node]
+      summary: 同上（保留给不消费 enable 的旧面板）
+      operationId: editUser
+      security:
+        - secretHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserInfo'
+      responses:
+        '200':
+          $ref: '#/components/responses/PushResult'
+  /user/del/{uid}:
+    post:
+      tags: [node]
+      summary: 摘除单个账号
+      operationId: deleteUser
+      security:
+        - secretHeader: []
+      parameters:
+        - name: uid
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          $ref: '#/components/responses/PushResult'
+  /user/list:
+    get:
+      tags: [node]
+      summary: 节点当前的用户集合（对账的「实际集合」）
+      description: 裸数组、无信封；面板的 `vnet:reconcile` 与 `EditUser` 旧路径以此为准。
+      operationId: listUsers
+      security:
+        - secretHeader: []
+      responses:
+        '200':
+          description: 当前账号数组
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserInfo'
+  /v2/node/reload:
+    post:
+      tags: [node]
+      summary: 用新的节点配置重建监听
+      description: |
+        会断掉全部在线连接，因此面板不会自动重投。本后端**先拉用户列表再改配置**：
+        此刻面板不可达则原样保留当前服务并回错误，不会把已经在跑的端口打空。
+      operationId: reloadNode
+      security:
+        - secretHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NodeInfo'
+      responses:
+        '200':
+          $ref: '#/components/responses/PushResult'
+components:
+  securitySchemes:
+    secretHeader:
+      type: apiKey
+      in: header
+      name: secret
+      description: 面板 `node_auth.secret`
+  parameters:
+    NodePathId:
+      name: node
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: 节点 ID
+    KeyHeader:
+      name: key
+      in: header
+      required: true
+      schema:
+        type: string
+      description: 节点授权 key（`node_auth.key`）
+    TimestampHeader:
+      name: timestamp
+      in: header
+      required: true
+      schema:
+        type: integer
+      description: unix 秒；与面板时差 ≥300 秒会被拒
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      schema:
+        type: string
+      description: 上一轮拿到的 ETAG；命中时面板返回 304 空体
+  responses:
+    Ack:
+      description: 面板收下
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    ParameterError:
+      description: 形状校验失败；HTTP 400
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Envelope'
+              - type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: string
+                    description: 完整错误列表（不是只取首条）
+    ClockSkew:
+      description: 时钟不同步或超时；HTTP 401
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    PushResult:
+      description: 本后端处理结果（HTTP 200；注意 success 是字符串）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PushEnvelope'
+  schemas:
+    Envelope:
+      type: object
+      required: [status, code, message]
+      properties:
+        status:
+          type: string
+          enum: [success, fail]
+        code:
+          type: integer
+          description: 六位业务码；HTTP 状态 = intdiv(code, 1000)，故业务失败也可能是 200
+        message:
+          type: string
+        data:
+          description: 各端点不同，未携带内容时为 null
+      additionalProperties: true
+    PushEnvelope:
+      type: object
+      required: [success, content]
+      properties:
+        success:
+          type: string
+          enum: ['true', 'false']
+          description: 字符串而非布尔值
+        content:
+          type: string
+      additionalProperties: true
+    NodeInfo:
+      type: object
+      properties:
+        id:
+          type: integer
+        port:
+          type: string
+          description: 单端口模式的监听端口，可为逗号分隔多端口；`"0"` 会绑到随机端口
+        passwd:
+          type: string
+          description: 单端口模式的共享密码
+        method:
+          type: string
+          description: 必须在本后端注册表内（docs/capabilities.json）
+        protocol:
+          type: string
+          description: 同上
+        obfs:
+          type: string
+          description: 同上
+        obfs_param:
+          type: string
+        protocol_param:
+          type: string
+          description: 服务端数据路径不消费它；面板可能不下发该键
+        push_port:
+          type: integer
+          description: 面板反向推送的端口
+        secret:
+          type: string
+        single:
+          type: integer
+          enum: [0, 1]
+          description: 判据是面板 `Node::isSinglePort()`（profile.passwd 非空才算填了）
+        speed_limit:
+          type: integer
+          description: 字节/秒；0 = 不限速（此时改用用户限速）
+        is_udp:
+          type: integer
+          enum: [0, 1]
+        client_limit:
+          type: integer
+          description: 并发客户端上限，仅在 auth_aes128_*/auth_chain_a 下生效；0 时本后端用默认 64
+        redirect_url:
+          type: string
+          description: 本后端不消费（封禁表现是连不上，不是跳转）
+    UserInfo:
+      type: object
+      required: [uid, port, passwd]
+      properties:
+        uid:
+          type: integer
+          description: 面板 user.id，也是本后端的账号主键
+        port:
+          type: integer
+          description: 非单端口下即该用户的监听端口；流量归属就是按端口→uid 反查
+        passwd:
+          type: string
+        speed_limit:
+          type: integer
+          description: 字节/秒（uint64，出现小数会导致整条请求绑定失败）
+        enable:
+          type: integer
+          enum: [0, 1]
+          description: 0 = 摘掉该账号（面板的禁用/到期就是靠它下发状态）
+        method:
+          type: string
+          description: 面板会带，但本后端只认 NodeInfo 里的节点级配置
+        protocol:
+          type: string
+        obfs:
+          type: string
+        obfs_param:
+          type: string
+    UserTraffic:
+      type: object
+      required: [uid, upload, download]
+      properties:
+        uid:
+          type: integer
+        upload:
+          type: integer
+          description: 字节（自上次上报以来的增量）
+        download:
+          type: integer
+          description: 字节
+        upspeed:
+          type: integer
+          description: 面板不消费
+        downspeed:
+          type: integer
+          description: 面板不消费
+    NodeOnline:
+      type: object
+      required: [uid, ip]
+      properties:
+        uid:
+          type: integer
+        ip:
+          type: string
+          description: 客户端出口地址；同轮多个用逗号拼接
+    NodeStatus:
+      type: object
+      required: [cpu, mem, disk, uptime]
+      properties:
+        cpu:
+          type: string
+          description: 带百分号的字符串，面板 intval 后 /100 存进 load
+        mem:
+          type: string
+        disk:
+          type: string
+        net:
+          type: string
+          description: 面板不消费
+        uptime:
+          type: integer
+          description: 本后端进程存活秒数
+    Rule:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [all, allow, reject]
+        rules:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              type:
+                type: string
+                enum: [reg, domain, ip, protocol, unknown]
+                description: protocol/unknown 本后端忽略
+              pattern:
+                type: string
+    Trigger:
+      type: object
+      required: [uid, rule_id, reason]
+      properties:
+        uid:
+          type: integer
+        rule_id:
+          type: integer
+        reason:
+          type: string

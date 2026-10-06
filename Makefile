@@ -2,7 +2,10 @@ LDFLAGS := -s -w
 # The -w and -s flags reduce binary sizes by excluding unnecessary symbols and debug info
 
 BINDIR := bin
+DISTDIR := dist
 SERVER_PKG := ./cmd/shadowsocksr-server
+# CI 用 tag 覆盖它（make package VERSION=${GITHUB_REF_NAME}），本地留默认值方便手工打包
+VERSION ?= v2.2.0
 
 all:
 	env CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/vnet_darwin_amd64 $(SERVER_PKG)
@@ -20,6 +23,10 @@ all:
 	env CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/vnet_linux_mipsle $(SERVER_PKG)
 
 clean:
-	rm -rf $(BINDIR)
+	rm -rf $(BINDIR) $(DISTDIR)
 
-.PHONY: all clean
+# 资产名、包内目录名与三项内容都由 release/package.sh 按部署脚本的契约生成
+package: all
+	@bash release/package.sh $(VERSION)
+
+.PHONY: all clean package

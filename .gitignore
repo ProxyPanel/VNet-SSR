@@ -1,4 +1,5 @@
 bin/
+dist/
 /server
 /server.exe
 /vnet
