@@ -102,10 +102,14 @@ func (ssr *ShadowsocksRProxy) StartTCP() error {
 			}()
 			defer ssrd.Close()
 			addr, err := socksproxy.ReadAddr(ssrd)
-			if err != nil && err != io.EOF {
-				logrus.WithFields(logrus.Fields{
-					"requestId": ssrd.RequestID,
-				}).Errorf("shadowsocksr read address error %s", err)
+			if err != nil {
+				// 空连接（健康检查、端口探测）在这里以 EOF 结束，不是错误；但两种情况都必须退出，
+				// 否则 addr 是 nil，往下走就是空指针
+				if err != io.EOF {
+					logrus.WithFields(logrus.Fields{
+						"requestId": ssrd.RequestID,
+					}).Errorf("shadowsocksr read address error %s", err)
+				}
 				return
 			}
 			ssr.handleStageAddr(ssrd.UID, ssrd.RemoteAddr().String(), ssrd.LocalAddr().String(), addr.String(), "tcp")
@@ -190,7 +194,9 @@ func (ssr *ShadowsocksRProxy) StartUDP() error {
 					continue
 				}
 				remoteAddr, err := socksproxy.SplitAddr(data)
-				if err != nil && err != io.EOF {
+				if err != nil {
+					// SplitAddr 只返回 ErrShortBuffer/atype error，不会有 EOF；
+					// 这里漏出去会让 remoteAddr 为 nil，panic 后整个端口的 UDP 读协程就没了
 					logrus.WithFields(logrus.Fields{
 						"requestId": ssrd.RequestID,
 					}).Errorf("shadowsocksr read address error %s", err)

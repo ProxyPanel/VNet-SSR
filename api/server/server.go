@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/api/client"
 	"github.com/ProxyPanel/VNet-SSR/common/log"
@@ -19,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -27,7 +29,8 @@ const (
 )
 
 var (
-	secret          string
+	// 中间件在多个 gin 协程里读，StartServer/NodeReload 在别的协程写——必须原子存取
+	pushSecret      atomic.Value // string
 	httpServer      *http.Server
 	httpServerMutex sync.Locker = new(sync.Mutex)
 	httpServerChan  chan int    = make(chan int, 2)
@@ -49,18 +52,34 @@ func init() {
 }
 
 func SetSecret(s string) {
-	secret = s
+	pushSecret.Store(s)
 }
+
+func loadSecret() string {
+	if s, ok := pushSecret.Load().(string); ok {
+		return s
+	}
+	return ""
+}
+
+// ErrEmptySecret 面板没给 secret 时的判据：空 secret 会让「不带 header」的请求恒等于服务端期望值
+var ErrEmptySecret = errors.New("node secret is empty, refusing to accept push requests")
 
 func secretCheck() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		s := c.GetHeader("secret")
-		if s == secret {
-			c.Next()
-		} else {
+		expected := loadSecret()
+		// 空 secret 一律拒：否则不带 secret 头的请求拿到 ""，比对 "" 直接放行
+		if expected == "" {
+			c.Abort()
+			fail(c, ErrEmptySecret)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(c.GetHeader("secret")), []byte(expected)) != 1 {
 			c.Abort()
 			fail(c, errors.New("secret check error"))
+			return
 		}
+		c.Next()
 	}
 }
 
@@ -68,7 +87,9 @@ func detailLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		body, _ := ioutil.ReadAll(c.Request.Body)
 		c.Request.Body = ioutil.NopCloser(bytes.NewBuffer(body))
-		log.Info("%s,%s,%s", c.Request.Method, c.Request.RequestURI, body)
+		// body 里有 passwd 与 secret，默认级别只留方法+路径
+		log.Info("%s,%s", c.Request.Method, c.Request.RequestURI)
+		log.Debug("%s,%s,%s", c.Request.Method, c.Request.RequestURI, body)
 		c.Next()
 	}
 }
@@ -80,9 +101,14 @@ func StartServer(port int, s string) {
 		log.Error("http server is not close")
 		return
 	}
+	if s == "" {
+		// 监听 :push_port 且无凭据 = 任何人可改用户表、重载整节点配置
+		log.Error("%v, push server on port %v is not started", ErrEmptySecret, port)
+		return
+	}
 	addr := fmt.Sprintf(":%v", port)
 	SetSecret(s)
-	log.Info("start server on %s secret %s", addr, s)
+	log.Info("start server on %s", addr)
 	r := InitRouter()
 	httpServer = &http.Server{
 		Addr:    addr,
@@ -128,7 +154,6 @@ func InitRouter() *gin.Engine {
 	}
 	return r
 }
-
 
 func UsersAdd(c *gin.Context) {
 	var users []*model.UserInfo
@@ -204,6 +229,11 @@ func NodeReload(c *gin.Context) {
 	var nodeInfo model.NodeInfo
 	if err := c.ShouldBind(&nodeInfo); err != nil {
 		fail(c, err)
+		return
+	}
+	// 带着空 secret 落配置，重启后 push 服务就不再起来（StartServer 拒绝监听），节点会失联
+	if nodeInfo.Secret == "" {
+		fail(c, ErrEmptySecret)
 		return
 	}
 	// 先把新集合取到手再改配置：面板此刻不可达时保持原样，不把已经在跑的服务打空

@@ -225,7 +225,7 @@ getVersion() {
     NEW_VER="$(normalizeVersion "$VERSION")"
     return 4
   else
-    VER="$(/usr/bin/vnet -version 2>/dev/null)"
+    VER="$(/usr/bin/vnet/vnet --version 2>/dev/null)"
     RETVAL=$?
     CUR_VER="$(normalizeVersion "$(echo "$VER" | head -n 1 | cut -d " " -f2)")"
     TAG_URL="https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master/release/version.json"

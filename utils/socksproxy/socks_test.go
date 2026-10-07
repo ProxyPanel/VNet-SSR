@@ -2,10 +2,25 @@
 package socksproxy
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"reflect"
 	"testing"
 )
+
+// ReadAddr 在空连接上必须返回 nil 地址 + io.EOF：调用方（proxy/server 的 TCP 分支）靠这个
+// 契约区分「客户端连上就断开」和「真的读到了地址」，拿到 nil 之后绝不能再解引用
+func TestReadAddr_EmptyConnection(t *testing.T) {
+	addr, err := ReadAddr(bytes.NewReader(nil))
+
+	if addr != nil {
+		t.Fatalf("空连接不该给出地址: %+v", addr)
+	}
+	if err != io.EOF {
+		t.Fatalf("空连接的错误必须是 io.EOF，调用方按它静默退出: %v", err)
+	}
+}
 
 func TestSocks5Addr_GetRaw(t *testing.T) {
 	tests := []struct {

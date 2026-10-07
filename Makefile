@@ -5,7 +5,7 @@ BINDIR := bin
 DISTDIR := dist
 SERVER_PKG := ./cmd/shadowsocksr-server
 # CI 用 tag 覆盖它（make package VERSION=${GITHUB_REF_NAME}），本地留默认值方便手工打包
-VERSION ?= v2.2.0
+VERSION ?= v2.2.1
 
 all:
 	env CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINDIR)/vnet_darwin_amd64 $(SERVER_PKG)

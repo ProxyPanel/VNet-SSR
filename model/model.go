@@ -31,6 +31,9 @@ type UserTraffic struct {
 	Download  int64 `json:"download"`
 	UpSpeed   int64 `json:"upspeed"`
 	DownSpeed int64 `json:"downspeed"`
+	// ReportID 同一批增量的所有行共用，重发时不变：面板按 (node_id, report_id, uid) 去重，
+	// 否则「面板已入账但响应丢失」的那一批会被再累加一次
+	ReportID string `json:"report_id"`
 }
 
 type NodeOnline struct {

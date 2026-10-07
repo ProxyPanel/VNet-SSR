@@ -29,37 +29,37 @@ func TestReportTrafficDrainsAndRequeuesOnFailure(t *testing.T) {
 	if len(s.traffic) != 0 {
 		t.Fatalf("上报后待上报表应清空: %+v", s.traffic)
 	}
+	if first[0].ReportID == "" || first[0].ReportID != first[1].ReportID {
+		t.Fatalf("同一批的所有行要共用一个非空 report_id: %+v", first)
+	}
 
-	// 发送失败：并回待上报表，同一批字节不能只存在于这一份快照里
+	// 发送失败：整批留在原地等重发，report_id 不变，面板据此把这批只算一次
 	s.requeueTraffic(first)
-	s.traffic[1].Upload += 50 // 清账之后又累计到的量必须保留
+	s.traffic[1] = &model.UserTraffic{Uid: 1, Upload: 50} // 清账之后又累计到的量
 
 	second := s.ReportTraffic()
 
-	if len(second) != 2 {
-		t.Fatalf("并回后两条记录都要还在: %+v", second)
+	if !reflect.DeepEqual(second, first) {
+		t.Fatalf("重发的必须是同一批、同一个 report_id，而不是与新量合并后的结果: %+v", second)
 	}
 
-	var uid1 *model.UserTraffic
+	third := s.ReportTraffic()
 
-	for _, item := range second {
-		if item.Uid == 1 {
-			uid1 = item
-		}
+	if len(third) != 1 || third[0].Uid != 1 || third[0].Upload != 50 {
+		t.Fatalf("重发期间累计的字节要留在待上报表里，不能丢: %+v", third)
 	}
-
-	if uid1 == nil || uid1.Upload != 150 || uid1.Download != 200 {
-		t.Fatalf("并回的是这一轮没送达的增量，之后累计的量要留在同一行上: %+v", uid1)
+	if third[0].ReportID == first[0].ReportID {
+		t.Fatalf("新一批必须换新 report_id，否则会被面板当成旧那批丢掉: %+v vs %+v", third, first)
 	}
 }
 
-func TestRequeueTrafficSkipsUnattributableBytes(t *testing.T) {
+func TestReportTrafficSkipsUnattributableBytes(t *testing.T) {
 	s := NewShadowsocksrService()
 	// uid 0 来自端口查不到账号的连接，面板不会收，留着只会越积越大
-	s.requeueTraffic([]*model.UserTraffic{{Uid: 0, Upload: 9999}})
+	s.traffic[0] = &model.UserTraffic{Uid: 0, Upload: 9999}
 
-	if len(s.traffic) != 0 {
-		t.Fatalf("uid 0 不该被并回: %+v", s.traffic)
+	if got := s.ReportTraffic(); len(got) != 0 {
+		t.Fatalf("uid 0 不该进上报批次: %+v", got)
 	}
 }
 
@@ -111,5 +111,46 @@ func TestSyncUsersRemovesAccountsAbsentFromPanel(t *testing.T) {
 
 	if !reflect.DeepEqual(uids, []int{1}) {
 		t.Fatalf("面板集合里没有的 uid 要被摘掉: %+v", uids)
+	}
+}
+
+// TestUserTableReadersConcurrentWithSync 钉住这一点：读侧（GET /api/user/list、Close 时的 GetUids）
+// 与后台 SyncUsers 的写并发时，遍历必须在锁内。
+// 不加锁时这里不是 data race 而是 runtime 的 "concurrent map read and map write" 致命错误，
+// recover 拦不住，整个进程会没——所以这条测试挂了就是节点会挂。
+func TestUserTableReadersConcurrentWithSync(t *testing.T) {
+	const total = 200
+
+	s := NewShadowsocksrService()
+	all := make([]*model.UserInfo, 0, total)
+	for i := 0; i < total; i++ {
+		user := &model.UserInfo{Uid: i + 1, Port: 1000 + i, Passwd: "p", Enable: 1}
+		s.userTable[user.Uid] = user
+		all = append(all, user)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// 写侧：每轮少一个账号，逐行从表里删掉（端口上没有监听器，走的是纯清表分支）
+		for i := total; i >= 0; i-- {
+			if err := s.SyncUsers(all[:i]); err != nil {
+				t.Errorf("sync failed: %s", err.Error())
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-done:
+			if got := len(s.GetUserList()); got != 0 {
+				t.Fatalf("全部账号都该被摘掉: %v", got)
+			}
+			return
+		default:
+			_ = s.GetUserList()
+			_ = s.GetUids()
+		}
 	}
 }

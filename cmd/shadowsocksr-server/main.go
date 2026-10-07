@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/api/client"
 	"github.com/ProxyPanel/VNet-SSR/api/server"
 	"github.com/ProxyPanel/VNet-SSR/cmd/shadowsocksr-server/command"
@@ -34,8 +33,22 @@ func main() {
 			logrus.Fatal(err)
 		}
 		core.GetApp().SetNodeInfo(nodeInfo)
+		// 空 secret 的节点等于把 push 端口开放给任何能连上它的人（可改用户表、重载配置），
+		// 这里直接退出，不带着无凭据的配置继续跑
+		if nodeInfo.Secret == "" {
+			logrus.Fatal(server.ErrEmptySecret)
+		}
 		logrus.WithFields(logrus.Fields{
-			"nodeInfo": fmt.Sprintf("%+v", nodeInfo),
+			"id":          nodeInfo.ID,
+			"port":        nodeInfo.Port,
+			"method":      nodeInfo.Method,
+			"protocol":    nodeInfo.Protocol,
+			"obfs":        nodeInfo.Obfs,
+			"pushPort":    nodeInfo.PushPort,
+			"single":      nodeInfo.Single,
+			"isUdp":       nodeInfo.IsUDP,
+			"clientLimit": nodeInfo.ClientLimit,
+			"speedLimit":  nodeInfo.SpeedLimit,
 		}).Info("get node info success")
 
 		core.GetApp().SetObfsProtocolService(obfs.NewObfsAuthChainData(nodeInfo.Protocol))

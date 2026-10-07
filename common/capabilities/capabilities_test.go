@@ -2,6 +2,7 @@ package capabilities
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +19,9 @@ func TestCommittedCapabilitiesMatchesTheRegistry(t *testing.T) {
 		t.Fatalf("从注册表生成名单失败：%s", err.Error())
 	}
 
-	if string(committed) != current {
+	// 仓库里存的是 LF，Windows 上 checkout 常带 core.autocrlf=true 变成 CRLF：
+	// 行尾不是这份文件要钉住的内容，比之前先归一化
+	if strings.ReplaceAll(string(committed), "\r\n", "\n") != current {
 		t.Fatalf("docs/capabilities.json 已与注册表漂移，请跑：go run ./cmd/capabilities > docs/capabilities.json")
 	}
 }

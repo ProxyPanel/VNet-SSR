@@ -1,13 +1,13 @@
 package client
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ProxyPanel/VNet-SSR/model"
@@ -22,8 +22,16 @@ import (
 var (
 	restyc *resty.Client
 	// 面板的 WebApiResponse 把 GET payload 哈希进 ETAG 头，带 If-None-Match 且内容未变时直接回 304
-	userListEtag string
+	// 读写分别来自 ReportTask 协程与 NodeReload 的 gin 协程，必须原子存取
+	userListEtag atomic.Value // string
 )
+
+func loadUserListEtag() string {
+	if v, ok := userListEtag.Load().(string); ok {
+		return v
+	}
+	return ""
+}
 
 const (
 	pullAttempts = 3
@@ -31,8 +39,8 @@ const (
 )
 
 func init() {
+	// 不再设 InsecureSkipVerify：跳过证书校验等于任何中间人都能冒充面板下发用户表与节点配置
 	restyc = resty.New().
-		SetTransport(&http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}).
 		SetTimeout(5 * time.Second).
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
 }
@@ -46,6 +54,9 @@ func InitHost() error {
 	apiHost := core.GetApp().ApiHost()
 	if apiHost == "" {
 		return errors.New("api_host is empty, cannot reach the panel")
+	}
+	if !strings.HasPrefix(apiHost, "http://") && !strings.HasPrefix(apiHost, "https://") {
+		return errors.New("api_host must start with http:// or https://, got: " + apiHost)
 	}
 
 	Host = strings.TrimRight(apiHost, "/") + "/api/ssr/v1"
@@ -190,7 +201,7 @@ func GetUserList() ([]*model.UserInfo, error) {
 
 		result = users
 		if etag != "" {
-			userListEtag = etag
+			userListEtag.Store(etag)
 		}
 
 		return nil
@@ -201,7 +212,7 @@ func GetUserList() ([]*model.UserInfo, error) {
 
 // SyncUserList 带 If-None-Match 拉一次；unchanged 为 true 表示面板说内容没变，此时 users 不可用
 func SyncUserList() (users []*model.UserInfo, unchanged bool, err error) {
-	body, changed, etag, err := getWithEtag(userListURL(), userListEtag)
+	body, changed, etag, err := getWithEtag(userListURL(), loadUserListEtag())
 	if err != nil {
 		return nil, false, err
 	}
@@ -214,7 +225,7 @@ func SyncUserList() (users []*model.UserInfo, unchanged bool, err error) {
 		return nil, false, err
 	}
 	if etag != "" {
-		userListEtag = etag
+		userListEtag.Store(etag)
 	}
 
 	return parsed, false, nil

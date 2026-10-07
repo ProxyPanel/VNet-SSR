@@ -27,9 +27,10 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   filepath.Base(os.Args[0]),
-	Short: fmt.Sprintf("vnet version %s\r\n", core.APP_VERSION),
-	Long:  fmt.Sprintf("vnet webapi version with ProxyPanel, current version: %s", core.APP_VERSION),
+	Use:     filepath.Base(os.Args[0]),
+	Short:   fmt.Sprintf("vnet version %s\r\n", core.APP_VERSION),
+	Long:    fmt.Sprintf("vnet webapi version with ProxyPanel, current version: %s", core.APP_VERSION),
+	Version: core.APP_VERSION,
 }
 
 func init() {
@@ -37,8 +38,8 @@ func init() {
 	rootCmd.Flags().String("config", "config.json", "config file default: config.json")
 	_ = viper.BindPFlag("config", rootCmd.Flags().Lookup("config"))
 
-	// add version menu
-	rootCmd.SetVersionTemplate(core.APP_VERSION)
+	// 部署脚本取的是这行的第二个字段（cut -d " " -f2）来和 version.json 比，格式不能改
+	rootCmd.SetVersionTemplate(fmt.Sprintf("vnet %s\n", core.APP_VERSION))
 
 	for _, item := range flagConfigs {
 		if item.Default != nil {

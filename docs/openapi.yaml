@@ -92,8 +92,11 @@ paths:
       summary: 上报用户流量增量
       description: |
         面板按 `node.traffic_rate` 倍率乘算后，在数据库侧 `u = u + …, d = d + …` 累加（不能先读后写）。
-        失效 uid 会被跳过并记日志，不影响同批其他账号。本后端在发送失败时把增量并回待上报表，
-        下一轮重发，绝不因发送失败丢账。
+        失效 uid 会被跳过并记日志，不影响同批其他账号。本后端在发送失败时把**整批**留在待发队列，
+        下一轮原样重发，绝不因发送失败丢账。
+        重投会带来重复累加的窗口（面板已入账但响应丢失），所以每批带一个 `report_id`：
+        同一批内各行相同，重发不变，新批次换新值。面板按 `(node_id, report_id, uid)` 去重即闭环；
+        未去重前该字段只是一个被忽略的多余键，不影响现有实现。
       operationId: reportUserTraffic
       parameters:
         - $ref: '#/components/parameters/NodePathId'
@@ -507,6 +510,9 @@ components:
         downspeed:
           type: integer
           description: 面板不消费
+        report_id:
+          type: string
+          description: 同一批增量的批次号，重发不变；面板据此对 (node_id, report_id, uid) 去重
     NodeOnline:
       type: object
       required: [uid, ip]

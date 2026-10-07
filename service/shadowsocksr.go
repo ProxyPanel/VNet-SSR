@@ -43,6 +43,7 @@ func NewShadowsocksrService() *SSRManager {
 		userTable:     make(map[int]*model.UserInfo),
 		userTableLock: new(sync.Mutex),
 		UpTime:        time.Now(),
+		bootStamp:     time.Now().Unix(),
 	}
 }
 
@@ -60,6 +61,10 @@ type SSRManager struct {
 	delUserHanelds []DelUserHandle
 	context.Context
 	cancel context.CancelFunc
+	// pendingTraffic 是上一次没送达的整批增量；面板按行上的 report_id 去重，所以整批原样重发、不再与新的合并
+	pendingTraffic []*model.UserTraffic
+	bootStamp      int64
+	reportSeq      uint64
 }
 
 func (s *SSRManager) uidToPortLocked(uid int) int {
@@ -120,42 +125,48 @@ func (s *SSRManager) Download(port int, n int64) {
 	s.trafficLock.Unlock()
 }
 
-// ReportTraffic 取走待上报的增量快照；发送失败由 requeueTraffic 并回——清账发生在发送之前，
-// 这一分钟的字节在面板侧只有一份记录，丢了就再也补不回来
+// ReportTraffic 取一批待上报的增量：上一批没送达就先原样重发那一批（report_id 不变，面板据此去重），
+// 否则取走当前累计的快照并给它一个新 id。清账发生在发送之前，这一分钟的字节在面板侧只有一份记录
 func (s *SSRManager) ReportTraffic() []*model.UserTraffic {
 	s.trafficLock.Lock()
 	defer s.trafficLock.Unlock()
 
+	if len(s.pendingTraffic) > 0 {
+		pending := s.pendingTraffic
+		s.pendingTraffic = nil
+		return pending
+	}
+
 	reportData := s.traffic
 	s.traffic = make(map[int]*model.UserTraffic)
 
+	s.reportSeq++
+	reportID := fmt.Sprintf("%d-%d-%d", core.GetApp().NodeId(), s.bootStamp, s.reportSeq)
+
 	convertReportData := make([]*model.UserTraffic, 0, len(reportData))
 	for _, value := range reportData {
+		// uid 为 0 的是端口查不到账号的字节，面板不会收
+		if value.Uid <= 0 {
+			continue
+		}
+		value.ReportID = reportID
 		convertReportData = append(convertReportData, value)
 	}
 
 	return convertReportData
 }
 
-// requeueTraffic 把没送达的增量并回待上报表；uid 为 0 的是端口查不到账号的字节，面板不会收，留着只会越积越多
+// requeueTraffic 把没送达的整批留在原地等下一轮重发；与新的增量合并会让 report_id 对不上内容，去重就废了
 func (s *SSRManager) requeueTraffic(data []*model.UserTraffic) {
 	s.trafficLock.Lock()
 	defer s.trafficLock.Unlock()
 
-	for _, value := range data {
-		if value.Uid <= 0 {
-			continue
-		}
-
-		current := s.traffic[value.Uid]
-		if current == nil {
-			current = &model.UserTraffic{Uid: value.Uid}
-			s.traffic[value.Uid] = current
-		}
-
-		current.Upload += value.Upload
-		current.Download += value.Download
+	if len(s.pendingTraffic) > 0 {
+		// 理论上到不了这里：一批只会在上一批送出结果之后才取下一批
+		logrus.Errorf("pending traffic batch is not empty, drop %d rows", len(data))
+		return
 	}
+	s.pendingTraffic = data
 }
 
 func (s *SSRManager) Online(port int, ip string) {
@@ -285,11 +296,23 @@ func (s *SSRManager) ApplyUsers(users []*model.UserInfo) error {
 
 // applyUser 调用方需持有 userTableLock
 func (s *SSRManager) applyUser(user *model.UserInfo) error {
+	if user.Uid <= 0 {
+		return errors.New("uid must be positive")
+	}
+
 	if user.Enable == 0 {
 		// 本来就不在节点上时 delUserReturl 会报错，这里与「已摘掉」同义
 		_, _ = s.delUserReturl(user.Uid)
 
 		return nil
+	}
+
+	// 缺 port/passwd 的行不能落：port 0 会真的去绑一个随机端口，空密码等于开放账号
+	if user.Port <= 0 || user.Port > 65535 {
+		return errors.New(fmt.Sprintf("uid %v has invalid port %v", user.Uid, user.Port))
+	}
+	if user.Passwd == "" {
+		return errors.New(fmt.Sprintf("uid %v has empty passwd", user.Uid))
 	}
 
 	before := s.userTable[user.Uid]
@@ -351,14 +374,6 @@ func (s *SSRManager) DelUsers(uids []int) error {
 		logrus.Infof("del uid: %v \n", uid)
 	}
 	return nil
-}
-
-func (s *SSRManager) GetUserByPort(port int) (user *model.UserInfo, exist bool) {
-	s.userTableLock.Lock()
-	defer s.userTableLock.Unlock()
-	uid := s.PortToUid(port)
-	user, exist = s.userTable[uid]
-	return
 }
 
 func (s *SSRManager) AddUser(user *model.UserInfo) error {
@@ -479,16 +494,9 @@ func (s *SSRManager) delUserReturl(uid int) (user *model.UserInfo, err error) {
 	return user, nil
 }
 
-func (s *SSRManager) GetUserFromPort(port int) *model.UserInfo {
-	for _, value := range s.userTable {
-		if value.Port == port {
-			return value
-		}
-	}
-	return nil
-}
-
 func (s *SSRManager) GetUserList() []*model.UserInfo {
+	s.userTableLock.Lock()
+	defer s.userTableLock.Unlock()
 	users := make([]*model.UserInfo, 0, len(s.userTable))
 	for _, value := range s.userTable {
 		users = append(users, value)
@@ -527,13 +535,14 @@ func (s *SSRManager) RegisterDelUserHandle(handle DelUserHandle) {
 //	return nil
 //}
 
-func (s *SSRManager) ReportTask() {
+// ReportTask 用启动时传入的 ctx 退出：Restart 会替换 s.Context，协程里再读那个字段就盯不到自己的 cancel
+func (s *SSRManager) ReportTask(ctx context.Context) {
 	log.Info("ReportTask start")
 	timer := time.Tick(1 * time.Second)
 	tick := 0
 	for {
 		select {
-		case <-s.Context.Done():
+		case <-ctx.Done():
 			log.Info("ReportTask close")
 			return
 		case <-timer:
@@ -579,6 +588,8 @@ func (s *SSRManager) ReportTask() {
 }
 
 func (s *SSRManager) GetUids() []int {
+	s.userTableLock.Lock()
+	defer s.userTableLock.Unlock()
 	uids := make([]int, 0, len(s.userTable))
 	for key := range s.userTable {
 		uids = append(uids, key)
@@ -640,7 +651,7 @@ func (s *SSRManager) startWith(users []*model.UserInfo) error {
 	if err := s.ApplyUsers(users); err != nil {
 		logrus.Error(err)
 	}
-	go s.ReportTask()
+	go s.ReportTask(ctx)
 	return nil
 }
 
@@ -651,8 +662,6 @@ func (s *SSRManager) Close() error {
 		log.Error("service is not start. so it can't be close")
 	}
 	s.cancel()
-	s.userTableLock.Lock()
-	s.userTableLock.Unlock()
 	if err := s.DelUsers(s.GetUids()); err != nil {
 		return err
 	}

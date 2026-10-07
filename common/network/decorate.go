@@ -66,6 +66,11 @@ func NewShadowsocksRDecorate(request *Request, obfsMethod, cryptMethod, key, pro
 }
 
 type ShadowsocksRDecorate struct {
+	// 这两个计数器要用 atomic 读写，放在结构体最前面：32 位平台（linux-32/arm/mips/mipsle
+	// 都在发布清单里）只有结构体首地址保证 8 字节对齐，挪到别的字段后面就会 panic
+	// "unaligned 64-bit atomic operation"
+	upload   int64
+	download int64
 	*Request
 	UID           int
 	obfs          obfs.Plain
@@ -79,8 +84,6 @@ type ShadowsocksRDecorate struct {
 	Overhead      int
 	ISLocal       bool
 	recvBuf       *bytes.Buffer
-	upload        int64
-	download      int64
 	single        int
 	common.TrafficReport
 	ILimiter
@@ -158,7 +161,7 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 			}).Debug("ShadowsocksRDecorate encryptor Decrypt")
 		}
 
-		if err != nil && strings.Contains(err.Error(),"buf is too short"){
+		if err != nil && strings.Contains(err.Error(), "buf is too short") {
 			return ssrd.Read(buf)
 		}
 
@@ -219,10 +222,11 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 		}
 		atomic.AddInt64(&ssrd.download, int64(n))
 	}
-	if ssrd.TrafficReport != nil && ssrd.UID != 0 && ssrd.upload != 0 {
-		//TODO add lock
-		ssrd.TrafficReport.Upload(ssrd.UID, ssrd.upload)
-		ssrd.upload = 0
+	// 计数器在读写两条路径上都会被 atomic 累加，取走时也必须原子换出，否则与对端 goroutine 竞态
+	if ssrd.TrafficReport != nil && ssrd.UID != 0 {
+		if uploaded := atomic.SwapInt64(&ssrd.upload, 0); uploaded != 0 {
+			ssrd.TrafficReport.Upload(ssrd.UID, uploaded)
+		}
 	}
 	if ssrd.recvBuf.Len() == 0 && len(data) == 0 {
 		return 0, nil
@@ -269,17 +273,20 @@ func (ssrd *ShadowsocksRDecorate) Write(buf []byte) (n int, err error) {
 		return 0, err
 	}
 	atomic.AddInt64(&ssrd.download, int64(n))
-	if ssrd.TrafficReport != nil && ssrd.download != 0 && ssrd.UID != 0 {
-		//TODO add lock
-		ssrd.TrafficReport.Download(ssrd.UID, ssrd.download)
-		ssrd.download = 0
+	// 同 upload：与 Read 那条 goroutine 共用计数器，取走必须原子换出
+	if ssrd.TrafficReport != nil && ssrd.UID != 0 {
+		if downloaded := atomic.SwapInt64(&ssrd.download, 0); downloaded != 0 {
+			ssrd.TrafficReport.Download(ssrd.UID, downloaded)
+		}
 	}
 
 	return len(buf), nil
 }
 
 func (ssrd *ShadowsocksRDecorate) ReadFrom() (data, uid []byte, addr net.Addr, err error) {
-	p := make([]byte, 2048)
+	// 65535：SS UDP 报文本身上限是它，前面还要加 IV/obfs/protocol/AEAD 开销，
+	// 用 2048 收包会让大报文在 socket 层就被砍尾，解密后拿到的是残缺数据
+	p := make([]byte, 65535)
 	n, addr, err := ssrd.PacketConn.ReadFrom(p)
 	if err != nil {
 		return nil, nil, nil, err
