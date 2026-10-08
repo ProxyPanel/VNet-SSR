@@ -14,6 +14,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+      # 部署脚本没有任何测试覆盖，语法错是最便宜的闸门；它们经 raw.githubusercontent 直接下发，坏一次就影响所有新装
+      - run: bash -n release/*.sh
       - run: go mod verify
       - run: go vet ./...
       - run: go test -timeout 120s ./...

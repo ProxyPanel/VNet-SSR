@@ -1,13 +1,14 @@
 #!/bin/bash
 
-# This file is accessible as https://install.direct/go.sh
-# Original source is located at github.com/vnet/vnet-core/release/install-release.sh
+# 下发地址：https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master/release/deploy.sh
 
 # If not specify, default meaning of return value:
 # 0: Success
 # 1: System error
 # 2: Application error
 # 3: Network error
+
+RAW_BASE='https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master'
 
 # CLI arguments
 PROXY=''
@@ -22,9 +23,12 @@ LOCAL=''
 LOCAL_INSTALL=''
 ERROR_IF_UPTODATE=''
 DNSCACHE=''
+TUNE=''
+UNKNOWN=''
 
 # 环境变量与命令行等价：curl|bash 的调用方只能传环境变量
 [[ "$WITH_DNS_CACHE" == "1" ]] && DNSCACHE='1'
+[[ "$WITH_TUNE" == "1" ]] && TUNE='1'
 
 CUR_VER=""
 NEW_VER=""
@@ -86,8 +90,11 @@ while [[ $# > 0 ]]; do
   --with-dns-cache)
     DNSCACHE="1"
     ;;
+  -t | --tune)
+    TUNE="1"
+    ;;
   *)
-    # unknown option
+    UNKNOWN="${UNKNOWN}${1} "
     ;;
   esac
   shift # past argument or value
@@ -239,7 +246,7 @@ getVersion() {
     VER="$(/usr/bin/vnet/vnet --version 2>/dev/null)"
     RETVAL=$?
     CUR_VER="$(normalizeVersion "$(echo "$VER" | head -n 1 | cut -d " " -f2)")"
-    TAG_URL="https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master/release/version.json"
+    TAG_URL="${RAW_BASE}/release/version.json"
     NEW_VER="$(normalizeVersion "$(curl ${PROXY} -s "${TAG_URL}" --connect-timeout 10 | grep 'latest' | cut -d\" -f4)")"
 
     if [[ $? -ne 0 ]] || [[ $NEW_VER == "" ]]; then
@@ -295,6 +302,32 @@ makeExecutable() {
   chmod +x "/usr/bin/vnet/$1"
 }
 
+VNET_BIN='/usr/bin/vnet/vnet'
+VNET_LINK='/usr/local/bin/vnet'
+
+# 软链只是给人用的便利：服务的 ExecStart 与 getVersion 都走绝对路径，链坏了不影响节点跑
+linkIsOurs() {
+  [[ "$(readlink "$VNET_LINK")" == "$VNET_BIN" ]]
+}
+
+makeSymlink() {
+  # readlink 不带 -f：卸载后链是悬空的，-f 要求中间目录存在会失败
+  if { [[ -e "$VNET_LINK" ]] || [[ -L "$VNET_LINK" ]]; } && ! linkIsOurs; then
+    colorEcho ${YELLOW} "$VNET_LINK 已被其它程序占用，不覆盖；用 $VNET_BIN 调用。"
+    return 0
+  fi
+  mkdir -p "$(dirname "$VNET_LINK")" && ln -sf "$VNET_BIN" "$VNET_LINK"
+  return 0
+}
+
+removeSymlink() {
+  # 只删自己建的那条，别人的同名文件不动
+  if linkIsOurs; then
+    rm -f "$VNET_LINK"
+  fi
+  return 0
+}
+
 installVNet() {
   # Install VNet binary to /usr/bin/vnet
   remove
@@ -305,6 +338,7 @@ installVNet() {
     return 1
   fi
   makeExecutable vnet
+  makeSymlink
 
   # Install VNet server config to /etc/vnet
   if [[ ! -f "/etc/vnet/config.json" ]]; then
@@ -344,22 +378,34 @@ installInitScript() {
 
 Help() {
   cat - 1>&2 <<EOF
-./install-release.sh [-h] [-c] [--remove] [-p proxy] [-f] [--version vx.y.z] [-l file]
-  -h, --help            Show help
-  -p, --proxy           To download through a proxy server, use -p socks5://127.0.0.1:1080 or -p http://127.0.0.1:3128 etc
-  -f, --force           Force install
-      --version         Install a particular version, use --version v3.15
-  -l, --local           Install from a local file
-      --remove          Remove installed VNet
-  -c, --check           Check for update
-      --with-dns-cache  装 dnsmasq 做本机解析缓存（只监听 127.0.0.1；验证不过会还原 resolv.conf）
-      --node_id         node_id for vnetpanel
-      --node_key        node_key for vnetpanel
-      --api_server      api_server for vnetpanel
+面板后台复制的那条命令不用改：它只装节点，装完会顺手把这台机器的体检结果打出来，
+要不要更进一步由你决定。要加东西只记一个位置 —— 写在管道末尾 bash 前面的变量串里：
+
+  curl -s <地址> | WEB_API="..." NODE_ID=1 NODE_KEY=... WITH_TUNE=1 bash
+
+  WITH_TUNE=1        装完跑 release/tune.sh 调系统参数（写 sysctl 等四处，不动 sshd 与防火墙，
+                     不重启 vnet；改完想立即生效就自己 systemctl restart vnet）
+  WITH_DNS_CACHE=1   装 dnsmasq 做本机解析缓存（只监听 127.0.0.1；验证不过会还原 resolv.conf）
+  WEB_API/NODE_ID/NODE_KEY  三个都给才会改写 /etc/vnet/config.json
+
+命令行形式（下载下来直接跑脚本时才用得上，开关要写给 bash 不是写给 curl）：
+  bash deploy.sh [-h] [-c] [--remove] [-p proxy] [-f] [--version vx.y.z] [-l file] [-t]
+    -h, --help            本帮助
+    -p, --proxy           走代理下载，如 -p socks5://127.0.0.1:1080 或 -p http://127.0.0.1:3128
+    -f, --force           版本相同也重装
+    -c, --check           只查有没有新版
+    -l, --local FILE      从本地包装
+        --remove          卸载
+        --tune, -t        同 WITH_TUNE=1
+        --with-dns-cache  同 WITH_DNS_CACHE=1
+        --version vx.y.z  装指定版本
+        --errifuptodate   已是最新版时以 10 退出
+        --extract DIR     解包到指定目录（配 --extractonly 只解不装）
 EOF
 }
 
 remove() {
+  removeSymlink
   if [[ -n "${SYSTEMCTL_CMD}" ]] && [[ -f "/etc/systemd/system/vnet.service" ]]; then
     if pgrep "vnet" >/dev/null; then
       stopVNet
@@ -420,17 +466,114 @@ checkUpdate() {
   return 0
 }
 
-# 单次解析耗时判据：慢就给出可执行的提示，本身不改任何文件
-checkDnsLatency() {
-  local start secs
-  start=$(date +%s)
-  getent hosts github.com >/dev/null 2>&1
-  secs=$(( $(date +%s) - start ))
-  if [[ $secs -ge 2 ]]; then
-    colorEcho ${YELLOW} "本机单次 DNS 查询耗时 ${secs}s：出站 UDP/53 丢包时，节点每个新建连都要等它。"
-    colorEcho ${YELLOW} "先把最坏等待压下来：给 /etc/resolv.conf 追加 'options timeout:1 attempts:2'；"
-    colorEcho ${YELLOW} "再把重复查询留在本机：重跑本脚本加 --with-dns-cache。"
+# 时长判据的地基：date 不支持 %N 时返回 1，调用方整段静默，绝不拿整数秒冒充毫秒
+nowMs() {
+  local n
+  n=$(date +%s%N 2>/dev/null)
+  [[ "$n" =~ ^[0-9]+$ ]] || return 1
+  echo $((n / 1000000))
+}
+
+DNS_COLD_MS=''
+DNS_REPEAT_MS=''
+DNS_BEFORE_REPEAT=''
+DNS_FAIL=0
+
+# 三个不同域名的冷查，外加对第一个域名的一次重复查：只有后者是本机缓存能整笔删掉的开销
+measureDns() {
+  local doms=(github.com cloudflare.com google.com)
+  local d t1 t2 times=()
+
+  DNS_COLD_MS='' DNS_REPEAT_MS='' DNS_FAIL=0
+  # 探测工具不存在时返回 1：这是「没测」，不能报成「域名解析不出来」
+  command -v getent >/dev/null 2>&1 || return 1
+  for d in "${doms[@]}"; do
+    t1=$(nowMs) || return 1
+    getent hosts "$d" >/dev/null 2>&1 || DNS_FAIL=1
+    t2=$(nowMs) || return 1
+    ((t2 >= t1)) && times+=($((t2 - t1)))
+  done
+  t1=$(nowMs) || return 1
+  getent hosts "${doms[0]}" >/dev/null 2>&1 || DNS_FAIL=1
+  t2=$(nowMs) || return 1
+  ((t2 >= t1)) && DNS_REPEAT_MS=$((t2 - t1))
+
+  DNS_COLD_MS="${times[*]}"
+  [[ -n "$DNS_COLD_MS" || -n "$DNS_REPEAT_MS" ]]
+  return 0
+}
+
+# 首行指向回环才说明查询真的经过本机缓存
+dnsCacheActive() {
+  head -n 1 /etc/resolv.conf 2>/dev/null | grep -qE '^nameserver[[:space:]]+127\.0\.0\.1$'
+}
+
+# 只读探测：慢就给出对应这一档的可执行提示，本身不改任何文件。全快则完全不出声。
+checkDnsResolution() {
+  # repeat_warn 取 100ms：命中本机缓存是个位数毫秒，但只省下几十毫秒不值得为此多跑一个服务
+  local cold_warn=1200 repeat_warn=100
+  local v n=0 slow=0 max=0 managed=0
+
+  measureDns || return 0
+  [[ -n "$DNS_COLD_MS" || -n "$DNS_REPEAT_MS" ]] || return 0
+  for v in $DNS_COLD_MS; do
+    n=$((n + 1))
+    ((v > max)) && max=$v
+    ((v >= cold_warn)) && slow=$((slow + 1))
+  done
+  [[ -L /etc/resolv.conf ]] && managed=1
+  # 两条独立的病：冷查持续慢（线路/上游）与重复查询仍然出网（本机没缓存）。偶发一次慢不算病。
+  local cold_slow=0 cache_worth=0
+  ((n > 0 && slow > 0 && slow * 2 >= n)) && cold_slow=1
+  [[ -n "$DNS_REPEAT_MS" ]] && ((DNS_REPEAT_MS >= repeat_warn)) && cache_worth=1
+
+  ((DNS_FAIL)) && colorEcho ${YELLOW} "有探测域名在这台机上没解析出来（超时与 NXDOMAIN 都长这样）：先单独复查 getent hosts github.com，别按慢查询处理它。"
+
+  if dnsCacheActive; then
+    if [[ -n "$DNS_BEFORE_REPEAT" && -n "$DNS_REPEAT_MS" ]]; then
+      colorEcho ${GREEN} "本机缓存效果：重复查询 ${DNS_BEFORE_REPEAT}ms -> ${DNS_REPEAT_MS}ms。"
+    fi
+    ((cache_worth)) && colorEcho ${YELLOW} "缓存已生效但重复查询仍要 ${DNS_REPEAT_MS}ms：上游 TTL 太短，条目到期就被丢掉，要留住得配 min-cache-ttl。"
+    ((cold_slow)) && colorEcho ${YELLOW} "冷查询最慢 ${max}ms、${slow}/${n} 次超过 ${cold_warn}ms：本机缓存省不掉这一笔，要换更近的上游或压超时。"
+  elif ((cold_slow || cache_worth)); then
+    ((cold_slow)) && colorEcho ${YELLOW} "冷查询最慢 ${max}ms、${slow}/${n} 次超过 ${cold_warn}ms：多半出站 UDP/53 在丢包，节点每见到一个新域名都要付一次这个钱。"
+    if ((managed)); then
+      colorEcho ${YELLOW} "  /etc/resolv.conf 是 systemd-resolved 的软链，本脚本不动它：上游走 /etc/systemd/resolved.conf.d/ 的 DNS=，压最坏等待用 DNSTimeout=，本机缓存开它自己的 Cache=yes。"
+    else
+      ((cold_slow)) && colorEcho ${YELLOW} "  先把最坏等待压下来：给 /etc/resolv.conf 追加 'options timeout:1 attempts:2'；还慢就换一个更近的上游。"
+      ((cache_worth)) && colorEcho ${YELLOW} "  重复查同一个域名仍要 ${DNS_REPEAT_MS}ms，这台机没在缓存重复查询：把这一档留在本机，重跑本脚本加 --with-dns-cache。"
+    fi
   fi
+
+  return 0
+}
+
+# 带 --with-dns-cache 时先量一次，装完才有可对比的前后值
+probeDnsPath() {
+  if [[ "$DNSCACHE" == "1" ]]; then
+    if measureDns && [[ -n "$DNS_REPEAT_MS" ]]; then
+      DNS_BEFORE_REPEAT="$DNS_REPEAT_MS"
+    fi
+    configureDnsCache
+  fi
+  checkDnsResolution
+  return 0
+}
+
+# tune.sh 不在发布包里，装的时候从 master 现取：改它立刻对新装生效，不用等发版打 tag
+runTune() {
+  local tune='/tmp/vnet-tune.sh'
+
+  if ! curl ${PROXY} -fsSL "${RAW_BASE}/release/tune.sh" --connect-timeout 10 -o "$tune"; then
+    colorEcho ${RED} "调优脚本没取到（${RAW_BASE}/release/tune.sh）：节点已经装好，只是没做系统调优。"
+    return 0
+  fi
+  if bash "$tune"; then
+    colorEcho ${GREEN} "调优这一步跑完了（改了什么、或为什么没做，都打印在上面）；要退回原样：bash $tune --rollback"
+  else
+    colorEcho ${RED} "调优脚本执行失败（上面是它的输出）：节点已经装好，系统配置没改完。"
+  fi
+  # 文件留着，--rollback 靠它；/tmp 下的一个小文件不值得为此再下一遍
   return 0
 }
 
@@ -470,7 +613,7 @@ configureDnsCache() {
   # 先落配置再装包：避免发行版默认配置先把 53 开到所有网卡上
   mkdir -p /etc/dnsmasq.d
   {
-    echo '# 由 release/deplody.sh --with-dns-cache 生成：只做本机缓存，不对外提供解析'
+    echo '# 由 release/deploy.sh --with-dns-cache 生成：只做本机缓存，不对外提供解析'
     echo 'listen-address=127.0.0.1'
     echo 'bind-interfaces'
     echo 'cache-size=2048'
@@ -538,10 +681,18 @@ configureDnsCache() {
 }
 
 main() {
+  # 放在 main 里而不是参数循环后面：colorEcho 要到下面才定义，写早了这句根本打不出来
+  if [[ -n "$UNKNOWN" ]]; then
+    colorEcho ${YELLOW} "忽略了认不出的参数：${UNKNOWN}开关要写给 bash（bash -s -- --tune），写给 curl 会被 curl 吃掉；面板复制来的那条不用改，开关写在 bash 前面的变量串里就行（WITH_TUNE=1）。"
+  fi
   #helping information
   [[ "$HELP" == "1" ]] && Help && return
   [[ "$CHECK" == "1" ]] && checkUpdate && return
-  [[ "$REMOVE" == "1" ]] && remove && return
+  if [[ "$REMOVE" == "1" ]]; then
+    remove
+    colorEcho ${YELLOW} "系统调优改的是这台机器的配置，不属于节点卸载的范围：要退回原样跑 bash /tmp/vnet-tune.sh --rollback。"
+    return
+  fi
 
   local ARCH=$(uname -m)
   VDIS="$(archAffix)"
@@ -560,8 +711,10 @@ main() {
     RETVAL="$?"
     if [[ $RETVAL == 0 ]] && [[ "$FORCE" != "1" ]]; then
       colorEcho ${BLUE} "Latest version ${CUR_VER} is already installed."
-      [[ "$DNSCACHE" == "1" ]] && configureDnsCache
-      checkDnsLatency
+      # 这条分支里 $VNET_BIN 一定存在（--version 刚成功过），所以老节点不带 -f 重跑一次就能补上软链
+      makeSymlink
+      probeDnsPath
+      [[ "$TUNE" == "1" ]] && runTune
       if [ -n "${ERROR_IF_UPTODATE}" ]; then
         return 10
       fi
@@ -590,8 +743,8 @@ main() {
   colorEcho ${BLUE} "Starting VNet service."
   startVNet
   colorEcho ${GREEN} "VNet ${NEW_VER} is installed."
-  [[ "$DNSCACHE" == "1" ]] && configureDnsCache
-  checkDnsLatency
+  probeDnsPath
+  [[ "$TUNE" == "1" ]] && runTune
   rm -rf /tmp/vnet
   return 0
 }
