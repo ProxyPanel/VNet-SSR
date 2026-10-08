@@ -72,6 +72,7 @@ type ShadowsocksRDecorate struct {
 	upload   int64
 	download int64
 	*Request
+	// 装的是端口（两种模式都是）：交给 TrafficReport/OnlineReport 按端口反查账号，别当面板 uid 用
 	UID           int
 	obfs          obfs.Plain
 	protocol      obfs.Plain
