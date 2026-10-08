@@ -16,6 +16,7 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/proxy/server"
 	"github.com/ProxyPanel/VNet-SSR/utils/addrx"
 	"github.com/ProxyPanel/VNet-SSR/utils/monitor"
+	"github.com/ProxyPanel/VNet-SSR/utils/netx"
 	"github.com/dustin/go-humanize"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -549,6 +550,10 @@ func (s *SSRManager) ReportTask(ctx context.Context) {
 		}
 		if tick%60 == 0 {
 			log.Info("trigger report task")
+			// 转发收口按分钟聚合：日志量与时间成正比，而不是与连接数成正比
+			if summary := netx.CopyEndSummary(); summary != "" {
+				log.Info("copy ended last minute: %s", summary)
+			}
 			traffic := s.ReportTraffic()
 			log.Info("prepare report traffic data, data length: %v", len(traffic))
 			if len(traffic) > 0 {

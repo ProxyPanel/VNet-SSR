@@ -138,3 +138,20 @@ php artisan vnet:reload
 （换厂商内置 resolver，或走 DoT/DoH），不是再加一层缓存。从安装到断言之间可能有数秒发行版默认配置已生效，
 事后复查一次 `ss -lntu 'sport = :53'` 更稳妥。
 
+
+## 8. 转发收口的日志形态
+
+一条 TCP 连接结束会在 `netx.DuplexCopyTcp` 的两个方向各收口一次。该函数在一个方向先结束时，
+会把两侧 deadline 设到过去以叫醒另一个方向，所以「对端读超时」是这套唤醒机制的正常产物，不是网络故障。
+旧实现把两个方向都按 error 级打出来（实测约 5500 行/小时），真异常会被淹掉。
+
+现在的判据：按「方向 × 结束原因」计数，明细降到 debug；`conn_reset` / `short_write` / `other`
+这类真异常在该分钟内只留一条 error 样本（带 `requestId` 可定位）。每分钟由 `ReportTask` 打一行摘要：
+
+```
+copy ended last minute: up_eof=1200 down_peer_closed=1180 up_conn_reset=3
+```
+
+字段含义：`up_*` 是客户端→上游方向的收口，`down_*` 是上游→客户端；原因取值 `eof`、`unexpected_eof`、
+`peer_closed`（同伴收口时的唤醒超时，属正常）、`conn_reset`、`short_write`、`other`。
+看趋势用 `journalctl -u vnet | grep "copy ended"`；只有 `conn_reset` 或 `other` 抬头才需要去查网络或对端。

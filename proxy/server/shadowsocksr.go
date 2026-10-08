@@ -144,9 +144,7 @@ func (ssr *ShadowsocksRProxy) StartTCP() error {
 			_, _, err = netx.DuplexCopyTcp(ssrd, req)
 			log.Debug("close %s", ssrd.RequestID)
 			if err != nil {
-				logrus.WithFields(logrus.Fields{
-					"requestId": ssrd.RequestID,
-				}).Errorf("shadowsocksr proxy process error %s", err)
+				// 收口原因、计数与每分钟样本行都由 netx 统一负责，这里再打一行就是把一次结束记两次
 				return
 			}
 		}()
