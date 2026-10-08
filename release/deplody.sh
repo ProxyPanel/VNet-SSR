@@ -21,6 +21,10 @@ EXTRACT_ONLY=''
 LOCAL=''
 LOCAL_INSTALL=''
 ERROR_IF_UPTODATE=''
+DNSCACHE=''
+
+# 环境变量与命令行等价：curl|bash 的调用方只能传环境变量
+[[ "$WITH_DNS_CACHE" == "1" ]] && DNSCACHE='1'
 
 CUR_VER=""
 NEW_VER=""
@@ -78,6 +82,9 @@ while [[ $# > 0 ]]; do
     ;;
   --errifuptodate)
     ERROR_IF_UPTODATE="1"
+    ;;
+  --with-dns-cache)
+    DNSCACHE="1"
     ;;
   *)
     # unknown option
@@ -341,6 +348,7 @@ Help() {
   -l, --local           Install from a local file
       --remove          Remove installed VNet
   -c, --check           Check for update
+      --with-dns-cache  装 dnsmasq 做本机解析缓存（只监听 127.0.0.1；验证不过会还原 resolv.conf）
       --node_id         node_id for vnetpanel
       --node_key        node_key for vnetpanel
       --api_server      api_server for vnetpanel
@@ -408,6 +416,123 @@ checkUpdate() {
   return 0
 }
 
+# 单次解析耗时判据：慢就给出可执行的提示，本身不改任何文件
+checkDnsLatency() {
+  local start secs
+  start=$(date +%s)
+  getent hosts github.com >/dev/null 2>&1
+  secs=$(( $(date +%s) - start ))
+  if [[ $secs -ge 2 ]]; then
+    colorEcho ${YELLOW} "本机单次 DNS 查询耗时 ${secs}s：出站 UDP/53 丢包时，节点每个新建连都要等它。"
+    colorEcho ${YELLOW} "先把最坏等待压下来：给 /etc/resolv.conf 追加 'options timeout:1 attempts:2'；"
+    colorEcho ${YELLOW} "再把重复查询留在本机：重跑本脚本加 --with-dns-cache。"
+  fi
+  return 0
+}
+
+restoreResolvConf() {
+  [[ -f /etc/resolv.conf.vnet-bak ]] && cp -a /etc/resolv.conf.vnet-bak /etc/resolv.conf
+  colorEcho ${YELLOW} "已还原 /etc/resolv.conf；dnsmasq 的配置留在 /etc/dnsmasq.d/vnet.conf，可自行删除。"
+}
+
+stopDnsmasq() {
+  if [[ -n "${SYSTEMCTL_CMD}" ]]; then
+    systemctl stop dnsmasq >/dev/null 2>&1
+  elif [[ -n "${SERVICE_CMD}" ]]; then
+    service dnsmasq stop >/dev/null 2>&1
+  fi
+}
+
+# dnsmasq 在这里只承担一件事：把重复的域名查询留在本机，别上那条会丢包的路。
+# 三条硬约束：只监听回环（对外开 53 就是可被利用的 DNS 放大反射源）；resolv.conf 保留原上游作后备
+# （否则 dnsmasq 一挂整机无解析）；装完必须断言实际监听地址与解析结果，不过就停服务并还原。
+configureDnsCache() {
+  local conf='/etc/dnsmasq.d/vnet.conf'
+  local upstreams listening start secs s
+
+  if [[ -L /etc/resolv.conf ]]; then
+    colorEcho ${YELLOW} "/etc/resolv.conf 是软链（systemd-resolved 接管），跳过 dnsmasq：要换上游请改 resolved 的配置，别覆盖 stub。"
+    return 0
+  fi
+
+  # 上游取自现有 resolv.conf；重复执行时首行已是 127.0.0.1，就沿用上次的记录
+  upstreams=$(awk '$1=="nameserver" && $2!="127.0.0.1" {print $2}' /etc/resolv.conf)
+  [[ -z "$upstreams" && -f "$conf" ]] && upstreams=$(sed -n 's/^server=\([0-9.]*\)$/\1/p' "$conf")
+  if [[ -z "$upstreams" ]]; then
+    colorEcho ${RED} "找不到可转发的上游 DNS，放弃配置（未改动任何文件）。"
+    return 1
+  fi
+
+  # 先落配置再装包：避免发行版默认配置先把 53 开到所有网卡上
+  mkdir -p /etc/dnsmasq.d
+  {
+    echo '# 由 release/deplody.sh --with-dns-cache 生成：只做本机缓存，不对外提供解析'
+    echo 'listen-address=127.0.0.1'
+    echo 'bind-interfaces'
+    echo 'cache-size=2048'
+    for s in $upstreams; do echo "server=$s"; done
+  } > "$conf" || return 1
+
+  installSoftware "dnsmasq" || return $?
+
+  [[ -f /etc/resolv.conf.vnet-bak ]] || cp -a /etc/resolv.conf /etc/resolv.conf.vnet-bak
+  {
+    echo 'nameserver 127.0.0.1'
+    for s in $upstreams; do echo "nameserver $s"; done
+    echo 'options timeout:1 attempts:2'
+  } > /etc/resolv.conf.tmp && mv -f /etc/resolv.conf.tmp /etc/resolv.conf
+
+  if [[ -n "${SYSTEMCTL_CMD}" ]]; then
+    systemctl enable dnsmasq >/dev/null 2>&1
+    if ! systemctl restart dnsmasq; then
+      colorEcho ${RED} "dnsmasq 起不来，还原 resolv.conf。"
+      restoreResolvConf
+      return 1
+    fi
+  elif [[ -n "${SERVICE_CMD}" ]]; then
+    service dnsmasq restart || { restoreResolvConf; return 1; }
+  else
+    colorEcho ${RED} "没有 systemctl/service，无法管理 dnsmasq，还原 resolv.conf。"
+    restoreResolvConf
+    return 1
+  fi
+
+  # 断言监听地址：不假设发行版有没有把 /etc/dnsmasq.d 包含进去
+  if command -v ss >/dev/null 2>&1; then
+    listening=$(ss -lntu 'sport = :53' 2>/dev/null | tail -n +2)
+    if ! echo "$listening" | grep -qE '(^|[[:space:]])127\.0\.0\.1:53([[:space:]]|$)'; then
+      colorEcho ${RED} "dnsmasq 没能在 127.0.0.1:53 上服务（多半是 53 已被别的进程占住），还原 resolv.conf。"
+      stopDnsmasq
+      restoreResolvConf
+      return 1
+    fi
+    if echo "$listening" | grep -vqE '(^|[[:space:]])(127\.0\.0\.1|\[::1\]):53([[:space:]]|$)'; then
+      colorEcho ${RED} "dnsmasq 监听到了非回环地址（开放解析器风险），已停服务并还原 resolv.conf。"
+      stopDnsmasq
+      restoreResolvConf
+      return 1
+    fi
+  else
+    colorEcho ${YELLOW} "没有 ss 命令，无法断言监听地址：请自行确认 dnsmasq 只在 127.0.0.1 上服务。"
+  fi
+
+  start=$(date +%s)
+  if ! getent hosts github.com >/dev/null 2>&1; then
+    colorEcho ${RED} "改用本机缓存后解析失败，还原 resolv.conf。"
+    restoreResolvConf
+    return 1
+  fi
+  secs=$(( $(date +%s) - start ))
+  if [[ $secs -gt 5 ]]; then
+    colorEcho ${RED} "改用本机缓存后单次解析仍要 ${secs}s：上游本身不可用时缓存救不了，还原 resolv.conf。"
+    restoreResolvConf
+    return 1
+  fi
+
+  colorEcho ${GREEN} "本机 DNS 缓存就绪：单次解析 ${secs}s，转发上游 $(echo $upstreams)。（安装到断言之间可能有数秒默认配置已生效，必要时复查 ss -lntu 'sport = :53'）"
+  return 0
+}
+
 main() {
   #helping information
   [[ "$HELP" == "1" ]] && Help && return
@@ -431,6 +556,8 @@ main() {
     RETVAL="$?"
     if [[ $RETVAL == 0 ]] && [[ "$FORCE" != "1" ]]; then
       colorEcho ${BLUE} "Latest version ${CUR_VER} is already installed."
+      [[ "$DNSCACHE" == "1" ]] && configureDnsCache
+      checkDnsLatency
       if [ -n "${ERROR_IF_UPTODATE}" ]; then
         return 10
       fi
@@ -459,6 +586,8 @@ main() {
   colorEcho ${BLUE} "Starting VNet service."
   startVNet
   colorEcho ${GREEN} "VNet ${NEW_VER} is installed."
+  [[ "$DNSCACHE" == "1" ]] && configureDnsCache
+  checkDnsLatency
   rm -rf /tmp/vnet
   return 0
 }

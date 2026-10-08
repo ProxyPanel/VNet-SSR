@@ -114,3 +114,27 @@ php artisan vnet:reload
 | 在线人数为 0 但有人在用 | `nodeOnline` 是否被整批拒收（`【在线上报】…已跳过`） |
 | 限速形同不存在或过小 | 下发的是 Mbps 还是字节/秒；`speed_limit` 是否为小数 |
 | 推送完全没效果 | 面板 `pushAddresses()` 是否为空（非 DDNS 且 `ip` 没填）；`push_port` 是否被防火墙挡 |
+| 新建连慢、日志有 `lookup <域名>: i/o timeout` | 本机单次解析耗时：`time getent hosts github.com`。接近 5 或 10 秒就是出站 UDP/53 在丢包（见第 7 节） |
+
+## 7. 本机 DNS 缓存（可选，默认不动系统）
+
+节点对**每个新建连**都要解析一次目标域名（`utils/addrx.ParseAddrFromString` → `net.Resolve*Addr`），
+进程内没有解析缓存，所以解析质量直接决定首字节延迟。出站 UDP/53 丢包时，glibc 默认的
+`timeout:5 attempts:2` 会让一次查询吃满约 10 秒。
+
+部署脚本提供 `--with-dns-cache`（等价环境变量 `WITH_DNS_CACHE=1`），装 `dnsmasq` 做本机缓存。
+**默认关闭**：面板给的命令是运维复制粘贴执行的，改整机解析不该是「装个节点」的隐含副作用。
+
+开启后脚本保证三件事，任何一条不满足就停服务并还原 `/etc/resolv.conf`：
+
+* 只监听回环（`listen-address=127.0.0.1` + `bind-interfaces`）。对外开 53 等于把这台机变成
+  可被利用的 DNS 放大反射源，这是本功能唯一不可协商的约束。
+* `/etc/resolv.conf` 里 `nameserver 127.0.0.1` 之后**保留原上游**作后备，并写 `options timeout:1 attempts:2`
+  把最坏等待压到 2~4 秒。没有后备那一行，dnsmasq 一挂就是整机无解析。
+* 起服务后用 `ss -lntu 'sport = :53'` 断言实际监听地址：必须看到 `127.0.0.1:53`，且不得出现任何非回环地址。
+  断言而不是假设发行版有没有包含 `/etc/dnsmasq.d`；`resolv.conf` 是软链（systemd-resolved 接管）时直接跳过。
+
+缓存救不了不可用的上游：换成本机缓存后单次解析仍超过 5 秒，脚本自己还原并退出，此时要修的是上游
+（换厂商内置 resolver，或走 DoT/DoH），不是再加一层缓存。从安装到断言之间可能有数秒发行版默认配置已生效，
+事后复查一次 `ss -lntu 'sport = :53'` 更稳妥。
+
