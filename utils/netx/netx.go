@@ -119,26 +119,26 @@ var (
 	// 真异常每分钟只留一条样本行，既保住告警价值又不让它淹没日志
 	copySampled [kindCount]bool
 
-	activeMu  sync.Mutex
-	activeUID = map[int]struct{}{}
+	activeMu    sync.Mutex
+	activePorts = map[int]struct{}{}
 )
 
-// 会话身份：多端口模式下是端口、单端口模式下是面板 uid，两者都与账号一一对应，
-// 所以集合大小就是本分钟建立过转发的活跃账号数
-type sessionUID interface{ GetUID() int }
+// 会话端口与账号一一对应，所以集合大小就是本分钟建立过转发的活跃账号数
+// （摘要里的字段名保留 active_uids，它是给运维看的"活跃账号数"）
+type sessionPort interface{ GetUserPort() int }
 
-func markActiveUID(id int) {
-	if id == 0 {
+func markActivePort(port int) {
+	if port == 0 {
 		return
 	}
 	activeMu.Lock()
-	activeUID[id] = struct{}{}
+	activePorts[port] = struct{}{}
 	activeMu.Unlock()
 }
 
 func recordActive(r network.IRequest) {
-	if u, ok := r.(sessionUID); ok {
-		markActiveUID(u.GetUID())
+	if u, ok := r.(sessionPort); ok {
+		markActivePort(u.GetUserPort())
 	}
 }
 
@@ -187,8 +187,8 @@ func CopyEndSummary() string {
 	defer copyStatsMu.Unlock()
 
 	activeMu.Lock()
-	active := len(activeUID)
-	activeUID = map[int]struct{}{}
+	active := len(activePorts)
+	activePorts = map[int]struct{}{}
 	activeMu.Unlock()
 
 	var total int64

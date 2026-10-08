@@ -287,6 +287,8 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 		var uid int
 		var uidPack []byte
 
+		// 与 auth_aes128 同一约定：解出的这 4 字节线格式叫 uid，本面板装的是用户端口，
+		// 所以拿它去查以端口打包为键的密码表，再经 UpdateUser 写回 UserPort
 		uid = int(binaryx.LEBytesToUInt32(a.RecvBuf[12:16]) ^ binaryx.LEBytesToUInt32(md5Data[8:12]))
 		a.UserIDNum = uid
 		uidPack = binaryx.LEUint32ToBytes(uint32(uid))

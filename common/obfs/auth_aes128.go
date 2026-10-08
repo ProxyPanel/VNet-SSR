@@ -338,6 +338,8 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 			return
 		}
 
+		// 报文里这 4 字节按 SSR 线格式叫 uid，但本面板约定它装的是用户端口：
+		// 密码表 GetUsers() 的键由 proxy/server 的 AddUser(port) 打包，UpdateUser 也把它写回 UserPort
 		uidPack := a.RecvBuf[7:11]
 		uid := binaryx.LEBytesToUInt32(uidPack)
 		if a.GetServerInfo().GetUsers()[string(uidPack)] != "" {

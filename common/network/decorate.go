@@ -60,7 +60,7 @@ func NewShadowsocksRDecorate(request *Request, obfsMethod, cryptMethod, key, pro
 	ssrd.protocol.SetServerInfo(ssrd.getServerInfo(false))
 
 	if single != 1 {
-		ssrd.UID = port
+		ssrd.UserPort = port
 	}
 	return ssrd, err
 }
@@ -72,8 +72,8 @@ type ShadowsocksRDecorate struct {
 	upload   int64
 	download int64
 	*Request
-	// 装的是端口（两种模式都是）：交给 TrafficReport/OnlineReport 按端口反查账号，别当面板 uid 用
-	UID           int
+	// 本会话对应的用户端口（与账号一一对应）：TrafficReport/OnlineReport 拿它按端口反查账号
+	UserPort      int
 	obfs          obfs.Plain
 	protocol      obfs.Plain
 	encryptor     *ciphers.Encryptor
@@ -95,16 +95,16 @@ func (ssrd *ShadowsocksRDecorate) SetLimter(limiter ILimiter) {
 	ssrd.ILimiter = limiter
 }
 
-// GetUID 返回会话身份：多端口模式下装的是端口（与账号一一对应），单端口模式下才是面板 uid。
-// 两者都唯一对应用户，所以适合用来数活跃账号，但不要把返回值本身当 uid 使
-func (ssrd *ShadowsocksRDecorate) GetUID() int {
-	return ssrd.UID
+// GetUserPort 返回本会话对应的用户端口：多端口模式下就是监听端口，单端口模式下从 auth 包的
+// 4 字节字段解出（该字段按 SSR 线格式叫 "uid"，本面板约定它装的是端口）
+func (ssrd *ShadowsocksRDecorate) GetUserPort() int {
+	return ssrd.UserPort
 }
 
 func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 	defer func() {
 		if ssrd.ILimiter != nil {
-			if err := ssrd.ILimiter.UpLimit(ssrd.UID, n); err != nil {
+			if err := ssrd.ILimiter.UpLimit(ssrd.UserPort, n); err != nil {
 				logrus.Error(err)
 			}
 		}
@@ -230,9 +230,9 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 		atomic.AddInt64(&ssrd.download, int64(n))
 	}
 	// 计数器在读写两条路径上都会被 atomic 累加，取走时也必须原子换出，否则与对端 goroutine 竞态
-	if ssrd.TrafficReport != nil && ssrd.UID != 0 {
+	if ssrd.TrafficReport != nil && ssrd.UserPort != 0 {
 		if uploaded := atomic.SwapInt64(&ssrd.upload, 0); uploaded != 0 {
-			ssrd.TrafficReport.Upload(ssrd.UID, uploaded)
+			ssrd.TrafficReport.Upload(ssrd.UserPort, uploaded)
 		}
 	}
 	if ssrd.recvBuf.Len() == 0 && len(data) == 0 {
@@ -247,7 +247,7 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 func (ssrd *ShadowsocksRDecorate) Write(buf []byte) (n int, err error) {
 	defer func() {
 		if ssrd.ILimiter != nil {
-			if err := ssrd.ILimiter.DownLimit(ssrd.UID, n); err != nil {
+			if err := ssrd.ILimiter.DownLimit(ssrd.UserPort, n); err != nil {
 				logrus.Error(err)
 			}
 		}
@@ -281,9 +281,9 @@ func (ssrd *ShadowsocksRDecorate) Write(buf []byte) (n int, err error) {
 	}
 	atomic.AddInt64(&ssrd.download, int64(n))
 	// 同 upload：与 Read 那条 goroutine 共用计数器，取走必须原子换出
-	if ssrd.TrafficReport != nil && ssrd.UID != 0 {
+	if ssrd.TrafficReport != nil && ssrd.UserPort != 0 {
 		if downloaded := atomic.SwapInt64(&ssrd.download, 0); downloaded != 0 {
-			ssrd.TrafficReport.Download(ssrd.UID, downloaded)
+			ssrd.TrafficReport.Download(ssrd.UserPort, downloaded)
 		}
 	}
 
@@ -312,8 +312,8 @@ func (ssrd *ShadowsocksRDecorate) ReadFrom() (data, uid []byte, addr net.Addr, e
 		ssrd.TrafficReport.Upload(int(binaryx.LEBytesToUInt32([]byte(uidPack))), int64(n))
 	}
 	if ssrd.single != 1 && ssrd.TrafficReport != nil {
-		ssrd.TrafficReport.Upload(ssrd.UID, int64(n))
-		uidPack = string(binaryx.LEUint32ToBytes(uint32(ssrd.UID)))
+		ssrd.TrafficReport.Upload(ssrd.UserPort, int64(n))
+		uidPack = string(binaryx.LEUint32ToBytes(uint32(ssrd.UserPort)))
 	}
 	return result, []byte(uidPack), addr, err
 
@@ -367,7 +367,7 @@ func (ssrd *ShadowsocksRDecorate) getServerInfo(isObfs bool) obfs.ServerInfo {
 func (ssrd *ShadowsocksRDecorate) UpdateUser(uid []byte) {
 	if ssrd.single == 1 {
 		uidInt := binaryx.LEBytesToUInt32(uid)
-		ssrd.UID = int(uidInt)
+		ssrd.UserPort = int(uidInt)
 		logrus.Infof("ShadowsocksRDecorate update uid: %v", uidInt)
 	}
 }

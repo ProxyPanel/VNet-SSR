@@ -112,10 +112,10 @@ func (ssr *ShadowsocksRProxy) StartTCP() error {
 				}
 				return
 			}
-			ssr.handleStageAddr(ssrd.UID, ssrd.RemoteAddr().String(), ssrd.LocalAddr().String(), addr.String(), "tcp")
+			ssr.handleStageAddr(ssrd.UserPort, ssrd.RemoteAddr().String(), ssrd.LocalAddr().String(), addr.String(), "tcp")
 			log.Info("reslove addr success: %s requestId: %s", addr.String(), ssrd.GetRequestId())
 
-			if ssr.HostFirewall != nil && !ssr.HostFirewall.JudgeHostWithReport(addr.GetAddress(), ssrd.UID) {
+			if ssr.HostFirewall != nil && !ssr.HostFirewall.JudgeHostWithReport(addr.GetAddress(), ssrd.UserPort) {
 				log.Info("%s is reject", addr.String())
 				body := fmt.Sprintf("%s is reject", addr.String())
 				t := &http.Response{
@@ -262,36 +262,37 @@ func (ssr *ShadowsocksRProxy) StartUDP() error {
 	return err
 }
 
-func (ssr *ShadowsocksRProxy) handleStageAddr(uid int, client, server, proxyTarget, network string) {
-	if uid == 0 {
+func (ssr *ShadowsocksRProxy) handleStageAddr(port int, client, server, proxyTarget, network string) {
+	if port == 0 {
 		logrus.WithFields(logrus.Fields{
-			"uid":         uid,
+			"port":        port,
 			"client":      client,
 			"server":      server,
 			"proxyTarget": proxyTarget,
-		}).Warn("handleStageAddr uid is 0")
+		}).Warn("handleStageAddr port is 0")
 		return
 	}
 	if ssr.OnlineReport != nil {
-		ssr.OnlineReport.Online(uid, client)
+		ssr.OnlineReport.Online(port, client)
 	}
 }
 
-func (ssr *ShadowsocksRProxy) AddUser(uid int, password string) {
+// AddUser 用端口做密码表的键：auth 包那 4 字节（SSR 线格式里叫 uid）按本面板约定装的就是端口
+func (ssr *ShadowsocksRProxy) AddUser(port int, password string) {
 	if ssr.Users == nil {
 		ssr.Users = make(map[string]string)
 	}
-	uidPack := binaryx.LEUint32ToBytes(uint32(uid))
+	uidPack := binaryx.LEUint32ToBytes(uint32(port))
 	logrus.Debugf("shadowsocksr adduser uidPack: %s", hex.EncodeToString(uidPack))
 	uidPackStr := string(uidPack)
 	ssr.Users[uidPackStr] = password
 }
 
-func (ssr *ShadowsocksRProxy) DelUser(uid int) {
+func (ssr *ShadowsocksRProxy) DelUser(port int) {
 	if ssr.Users == nil {
 		return
 	}
-	uidPack := string(binaryx.LEUint32ToBytes(uint32(uid)))
+	uidPack := string(binaryx.LEUint32ToBytes(uint32(port)))
 	delete(ssr.Users, uidPack)
 }
 

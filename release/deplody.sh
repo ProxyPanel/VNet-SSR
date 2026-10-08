@@ -167,14 +167,18 @@ installSoftware() {
   fi
   if [[ $SOFTWARE_UPDATED -eq 0 ]]; then
     colorEcho ${BLUE} "Updating software repo"
-    $CMD_UPDATE
+    # 刷新失败不能静默继续：发行版进归档后包列表是旧的，后面的安装会报 404，
+    # 而 404 看起来像是脚本在装错东西
+    if ! $CMD_UPDATE; then
+      colorEcho ${YELLOW} "软件源刷新失败：这台机的发行版可能已进归档，先修 /etc/apt/sources.list 再重试。"
+    fi
     SOFTWARE_UPDATED=1
   fi
 
   colorEcho ${BLUE} "Installing ${COMPONENT}"
   $CMD_INSTALL $COMPONENT
   if [[ $? -ne 0 ]]; then
-    colorEcho ${RED} "Failed to install ${COMPONENT}. Please install it manually."
+    colorEcho ${RED} "Failed to install ${COMPONENT}. 若上面是 404，多半是软件源过期（见刷新失败那条），不是本脚本的问题。"
     return 1
   fi
   return 0
