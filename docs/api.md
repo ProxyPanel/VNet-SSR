@@ -149,9 +149,11 @@ php artisan vnet:reload
 这类真异常在该分钟内只留一条 error 样本（带 `requestId` 可定位）。每分钟由 `ReportTask` 打一行摘要：
 
 ```
-copy ended last minute: up_eof=1200 down_peer_closed=1180 up_conn_reset=3
+copy ended last minute: active_uids=214 up_eof=1200 down_peer_closed=1180 up_conn_reset=3
 ```
 
-字段含义：`up_*` 是客户端→上游方向的收口，`down_*` 是上游→客户端；原因取值 `eof`、`unexpected_eof`、
+字段含义：`active_uids` 是本分钟建立过转发的不同会话身份数（多端口模式下键是端口、单端口模式下是面板
+uid，两者都与账号一一对应，所以计数就是活跃账号数；但别把返回值本身当 uid 用）；`up_*` 是客户端→上游
+方向的收口，`down_*` 是上游→客户端；原因取值 `eof`、`unexpected_eof`、
 `peer_closed`（同伴收口时的唤醒超时，属正常）、`conn_reset`、`short_write`、`other`。
 看趋势用 `journalctl -u vnet | grep "copy ended"`；只有 `conn_reset` 或 `other` 抬头才需要去查网络或对端。

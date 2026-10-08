@@ -56,6 +56,8 @@ func Copy(dst,src network.IRequest) (written int64, err error){
 // down means right connection to left connections transfer data count
 // and the last result is error
 func DuplexCopyTcp(left, right network.IRequest) (up, down int64, err error) {
+	recordActive(left)
+
 	type res struct {
 		N   int64
 		Err error
@@ -116,7 +118,29 @@ var (
 	copyStats   [dirCount][kindCount]int64
 	// 真异常每分钟只留一条样本行，既保住告警价值又不让它淹没日志
 	copySampled [kindCount]bool
+
+	activeMu  sync.Mutex
+	activeUID = map[int]struct{}{}
 )
+
+// 会话身份：多端口模式下是端口、单端口模式下是面板 uid，两者都与账号一一对应，
+// 所以集合大小就是本分钟建立过转发的活跃账号数
+type sessionUID interface{ GetUID() int }
+
+func markActiveUID(id int) {
+	if id == 0 {
+		return
+	}
+	activeMu.Lock()
+	activeUID[id] = struct{}{}
+	activeMu.Unlock()
+}
+
+func recordActive(r network.IRequest) {
+	if u, ok := r.(sessionUID); ok {
+		markActiveUID(u.GetUID())
+	}
+}
 
 // 这些原因代表真出问题，值得在日志里留一条可定位的样本
 func kindNeedsSample(kind int) bool {
@@ -157,13 +181,21 @@ func recordCopyEnd(dir, kind int, detail string) bool {
 	return false
 }
 
-// CopyEndSummary 取出并清零上一分钟的收口计数；没有收口时返回空串，调用方据此不打日志
+// CopyEndSummary 取出并清零上一分钟的收口计数与活跃集合；两者都空时返回空串，调用方据此不打日志
 func CopyEndSummary() string {
 	copyStatsMu.Lock()
 	defer copyStatsMu.Unlock()
 
+	activeMu.Lock()
+	active := len(activeUID)
+	activeUID = map[int]struct{}{}
+	activeMu.Unlock()
+
 	var total int64
-	parts := make([]string, 0, dirCount*kindCount)
+	parts := make([]string, 0, dirCount*kindCount+1)
+	if active > 0 {
+		parts = append(parts, fmt.Sprintf("active_uids=%d", active))
+	}
 	for d := 0; d < dirCount; d++ {
 		for k := 0; k < kindCount; k++ {
 			if n := copyStats[d][k]; n > 0 {
@@ -177,7 +209,7 @@ func CopyEndSummary() string {
 		copySampled[i] = false
 	}
 
-	if total == 0 {
+	if total == 0 && active == 0 {
 		return ""
 	}
 	return strings.Join(parts, " ")

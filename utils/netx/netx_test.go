@@ -72,6 +72,23 @@ func TestCopyEndSummaryCountsAndClears(t *testing.T) {
 	}
 }
 
+func TestCopyEndSummaryCountsActiveUIDs(t *testing.T) {
+	_ = CopyEndSummary()
+
+	markActiveUID(1001)
+	markActiveUID(1001) // 同一账号开多条连接只算一个活跃账号
+	markActiveUID(1002)
+	markActiveUID(0) // 还没认出身份的会话不进集合
+
+	if got, want := CopyEndSummary(), "active_uids=2"; got != want {
+		t.Errorf("摘要=%q, 期望 %q", got, want)
+	}
+
+	if again := CopyEndSummary(); again != "" {
+		t.Errorf("取过一次之后活跃集合应清零, 实际 %q", again)
+	}
+}
+
 // 同类真异常每分钟只留一条样本行，取摘要时重新开放
 func TestRealFaultSampledOncePerMinute(t *testing.T) {
 	_ = CopyEndSummary()

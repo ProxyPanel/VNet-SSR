@@ -94,6 +94,12 @@ func (ssrd *ShadowsocksRDecorate) SetLimter(limiter ILimiter) {
 	ssrd.ILimiter = limiter
 }
 
+// GetUID 返回会话身份：多端口模式下装的是端口（与账号一一对应），单端口模式下才是面板 uid。
+// 两者都唯一对应用户，所以适合用来数活跃账号，但不要把返回值本身当 uid 使
+func (ssrd *ShadowsocksRDecorate) GetUID() int {
+	return ssrd.UID
+}
+
 func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 	defer func() {
 		if ssrd.ILimiter != nil {
