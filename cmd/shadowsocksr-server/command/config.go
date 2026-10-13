@@ -13,7 +13,6 @@ type FlagSetting struct {
 	Name     string
 	Default  interface{}
 	Usage    string
-	Example  string
 	Type     reflect.Kind
 	Required bool
 }

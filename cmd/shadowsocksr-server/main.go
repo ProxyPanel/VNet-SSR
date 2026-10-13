@@ -69,8 +69,8 @@ func main() {
 	})
 }
 
-// probeEgress 只打一行观测日志：这个值没有任何消费方，所以绝不能挡在启动路径上
-// （原先是解析配置之前同步 GET + panic，外部站点不可达时 systemd 会把进程拖进无限重启循环）
+// probeEgress 只打一行观测日志：这个值没有任何消费方，所以绝不能挡在启动路径上——
+// 放在解析配置之前做同步 GET 并在失败时 panic，外部站点不可达就会被 systemd 拖进无限重启循环
 func probeEgress() {
 	for _, probe := range []struct{ family, url string }{
 		{"ipv4", "https://api-ipv4.ip.sb/ip"},
