@@ -29,6 +29,7 @@ var (
 
 func init() {
 	registerMethod("tls1.2_ticket_auth", NewObfsTLS)
+	registerMethod("tls1.2_ticket_fastauth", NewObfsTLSFastAuth)
 }
 
 type ObfsAuthData struct {
@@ -58,6 +59,8 @@ type ObfsTLS struct {
 	MaxTimeDiff     int
 	TLSVersion      []byte
 	Overhead        int
+	// SkipAuthCheck 是 fastauth 的全部差异：线格式相同，只是校验不过时降级放行
+	SkipAuthCheck bool
 }
 
 func NewObfsTLS(method string) (Plain, error) {
@@ -73,6 +76,17 @@ func NewObfsTLS(method string) (Plain, error) {
 		Overhead:        DEFAULT_OVERHEAD,
 		ObfsAuthData:    NewObfsAuthData(),
 	}, nil
+}
+
+// NewObfsTLSFastAuth 与 tls1.2_ticket_auth 共用实现；上游 fastauth 的语义是
+// 「auth 数据不可信时不掐连接」，用于容忍客户端时钟漂移与重放窗口
+func NewObfsTLSFastAuth(method string) (Plain, error) {
+	p, err := NewObfsTLS(method)
+	if err != nil {
+		return nil, err
+	}
+	p.(*ObfsTLS).SkipAuthCheck = true
+	return p, nil
 }
 
 func (otls *ObfsTLS) GetOverhead(direction bool) int {
@@ -179,7 +193,7 @@ func (otls *ObfsTLS) ClientEncode(buf []byte) ([]byte, error) {
 	return []byte{}, nil
 }
 
-//ClientDecode buffer_to_recv, is_need_to_encode_and_send_back
+// ClientDecode buffer_to_recv, is_need_to_encode_and_send_back
 func (otls *ObfsTLS) ClientDecode(buf []byte) ([]byte, bool, error) {
 	if otls.HandshakeStatus == -1 {
 		return buf, false, nil
@@ -272,6 +286,10 @@ func (otls *ObfsTLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 		return buf, true, false, nil
 	}
 	if (otls.HandshakeStatus & 4) == 4 {
+		if otls.SkipAuthCheck && (len(buf) == 0 || int(buf[0]) != 0x17) {
+			// fastauth 降级后与 plain 同义：非 appdata 记录直接透传，不再要求 TLS 头
+			return buf, true, false, nil
+		}
 		ret := new(bytes.Buffer)
 		otls.RecvBuffer = conbineToBytes(otls.RecvBuffer, buf)
 		for len(otls.RecvBuffer) > 5 {
@@ -331,7 +349,7 @@ func (otls *ObfsTLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 		return []byte{}, false, false, nil
 	}
 	if !matchBegin(buf, []byte{0x16, 0x03, 0x01}) {
-		return otls.DecodeErrorReturn(originBuf)
+		return otls.authFailureReturn(originBuf)
 	}
 	buf = buf[3:]
 	headerLen := binary.BigEndian.Uint16(buf[:2])
@@ -344,17 +362,17 @@ func (otls *ObfsTLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 	buf = buf[2 : headerLen+2]
 	if !matchBegin(buf, []byte{0x01, 0x00}) {
 		log.Info("tls_auth not client hello message")
-		return otls.DecodeErrorReturn(originBuf)
+		return otls.authFailureReturn(originBuf)
 	}
 	buf = buf[2:]
 	if binary.BigEndian.Uint16(buf) != uint16(len(buf))-2 {
 		log.Info("tls_auth wrong message size")
-		return otls.DecodeErrorReturn(originBuf)
+		return otls.authFailureReturn(originBuf)
 	}
 	buf = buf[2:]
 	if !matchBegin(buf, otls.TLSVersion) {
 		log.Info("tls_auth wrong tls version")
-		return otls.DecodeErrorReturn(originBuf)
+		return otls.authFailureReturn(originBuf)
 	}
 	buf = buf[2:]
 	verifyId := buf[:32]
@@ -362,7 +380,7 @@ func (otls *ObfsTLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 	sessionLen := int8(buf[0])
 	if sessionLen < 32 {
 		log.Info("tls_auth wrong sessionid_len")
-		return otls.DecodeErrorReturn(originBuf)
+		return otls.authFailureReturn(originBuf)
 	}
 	sessionId := buf[1 : sessionLen+1]
 	buf = buf[sessionLen+1:]
@@ -386,17 +404,17 @@ func (otls *ObfsTLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 			"nowUnix":       time.Now().Unix(),
 			"timeDif":       timeDif,
 		}).Error("tls_auth wrong time")
-		return otls.DecodeErrorReturn(originBuf)
+		return otls.authFailureReturn(originBuf)
 	}
 
 	if !bytes.Equal(sha1, verifyId[22:]) {
 		log.Info("tls_auth wrong sha1")
-		return otls.DecodeErrorReturn(originBuf)
+		return otls.authFailureReturn(originBuf)
 	}
 
 	if otls.ClientData.Get(string(verifyId[:22])) != nil {
 		log.Info("replay attack detect, id = %s", hex.EncodeToString(verifyId))
-		return otls.DecodeErrorReturn(originBuf)
+		return otls.authFailureReturn(originBuf)
 	}
 
 	otls.ClientData.Put(string(verifyId[:22]), sessionId, time.Duration(DEFAULT_MAX_TIME_DIFF)*time.Second)
@@ -420,6 +438,16 @@ func (otls *ObfsTLS) sni(host string) []byte {
 	data := conbineToBytes([]byte{0x00}, uint16(len(url)), url)
 	data = conbineToBytes([]byte{0x00, 0x00}, uint16(len(data)+2), uint16(len(data)), data)
 	return data
+}
+
+// authFailureReturn 处理 hello 校验失败：fastauth 保留已取的 ClientID 并降级当 plain 透传，
+// 严格模式丢回 E*2048 并永久退出手握手
+func (otls *ObfsTLS) authFailureReturn(buf []byte) ([]byte, bool, bool, error) {
+	if otls.SkipAuthCheck {
+		otls.HandshakeStatus |= 4
+		return buf, true, false, nil
+	}
+	return otls.DecodeErrorReturn(buf)
 }
 
 func (otls *ObfsTLS) DecodeErrorReturn(buf []byte) ([]byte, bool, bool, error) {

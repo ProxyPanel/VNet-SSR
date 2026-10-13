@@ -48,6 +48,8 @@ type HttpSimple struct {
 	host          string
 	port          int
 	recvBuf       []byte
+	// 兜底回包可被 HttpPost 替换：ServerDecode 的接收者是内嵌实例，方法覆盖不会被它看到
+	notMatchData func(buf []byte) ([]byte, bool, bool)
 }
 
 func NewHttpSimple(method string) (Plain, error) {
@@ -55,9 +57,9 @@ func NewHttpSimple(method string) (Plain, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &HttpSimple{
-		Plain: newPlain,
-	}, nil
+	h := &HttpSimple{Plain: newPlain}
+	h.notMatchData = h.defaultNotMatchData
+	return h, nil
 }
 
 func (h *HttpSimple) encodeHead(buf []byte) []byte {
@@ -119,19 +121,23 @@ func (h *HttpSimple) getHostFromHttpHeader(buf []byte) string {
 	return ""
 }
 
+// defaultNotMatchData 是兜底回包的 http_simple 语义；HttpPost 在构造时替换 notMatchData 函数字段
+func (h *HttpSimple) defaultNotMatchData(buf []byte) ([]byte, bool, bool) {
+	return bytes.Repeat([]byte("E"), 2048), false, false
+}
+
 func (h *HttpSimple) notMatchReturn(buf []byte) ([]byte, bool, bool, error) {
 	h.hasSentHeader = true
 	h.hasRecvHeader = true
-	if h.GetMethod() == "http_simple" {
-		return bytes.Repeat([]byte("E"), 2048), false, false, nil
-	}
-	return buf, true, false, nil
+	ret, needDecrypt, needSendBack := h.notMatchData(buf)
+	return ret, needDecrypt, needSendBack, nil
 }
 
 func (h *HttpSimple) errorReturn(buf []byte) ([]byte, bool, bool, error) {
 	h.hasSentHeader = true
 	h.hasRecvHeader = true
-	return bytes.Repeat([]byte("E"), 2048), false, false, nil
+	ret, needDecrypt, needSendBack := h.notMatchData(buf)
+	return ret, needDecrypt, needSendBack, nil
 }
 
 func (h *HttpSimple) ClientEncode(buf []byte) ([]byte, error) {

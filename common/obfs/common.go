@@ -240,7 +240,6 @@ func (o *ObfsAuthChainData) Insert(userID []byte, clientID, connectionID int) bo
 		if localClientID.First() == nil || localClientID.Len() < o.MaxClient {
 			log.Info("new client: %d, user: %d", clientID, binaryx.LEBytesToUInt32(userID))
 			if !localClientID.IsExist(clientID) {
-				// TODO check
 				localClientID.Put(clientID, NewClientQueue(connectionID))
 			} else {
 				localClientID.Get(clientID).(*ClientQueue).ReEnable(connectionID)
@@ -252,7 +251,6 @@ func (o *ObfsAuthChainData) Insert(userID []byte, clientID, connectionID int) bo
 		if localClientIDFirst != nil && !localClientID.Get(localClientIDFirst).(*ClientQueue).IsActive() {
 			localClientID.Delete(localClientIDFirst)
 			if !localClientID.IsExist(clientID) {
-				// TODO check
 				localClientID.Put(clientID, NewClientQueue(connectionID))
 			} else {
 				localClientID.Get(clientID).(*ClientQueue).ReEnable(connectionID)

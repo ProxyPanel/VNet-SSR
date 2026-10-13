@@ -11,7 +11,7 @@ import (
 func TestGetObfsRejectsUnregisteredNames(t *testing.T) {
 	core.GetApp().SetObfsProtocolService(NewObfsAuthChainData("origin"))
 
-	for _, name := range []string{"auth_chain_b", "auth_chain_c", "auth_sha1_v4", "http_post", "random_head", "tls1.2_ticket_fastauth", ""} {
+	for _, name := range []string{"verify_simple", "auth_simple", "auth_sha1", "auth_sha1_v2", "auth_chain_g", "random_head", ""} {
 		plain, err := GetObfs(name)
 		if err == nil || plain != nil {
 			t.Fatalf("%q 未注册却拿到了实例: %v %v", name, plain, err)
@@ -23,7 +23,9 @@ func TestGetObfsRejectsUnregisteredNames(t *testing.T) {
 func TestGetObfsBuildsEveryRegisteredName(t *testing.T) {
 	core.GetApp().SetObfsProtocolService(NewObfsAuthChainData("origin"))
 
-	for _, name := range []string{"origin", "plain", "http_simple", "tls1.2_ticket_auth", "auth_aes128_md5", "auth_aes128_sha1", "auth_chain_a"} {
+	for _, name := range []string{"origin", "plain", "http_simple", "http_post", "tls1.2_ticket_auth", "tls1.2_ticket_fastauth",
+		"auth_sha1_v4", "auth_aes128_md5", "auth_aes128_sha1",
+		"auth_chain_a", "auth_chain_b", "auth_chain_c", "auth_chain_d", "auth_chain_e", "auth_chain_f"} {
 		plain, err := GetObfs(name)
 		if err != nil || plain == nil {
 			t.Fatalf("%q 应当可用: %v %v", name, plain, err)

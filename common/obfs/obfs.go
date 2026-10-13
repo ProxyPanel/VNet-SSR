@@ -6,7 +6,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-type PlainFactory func(string) (Plain,error)
+type PlainFactory func(string) (Plain, error)
 
 // Plain interface
 type Plain interface {
@@ -27,7 +27,7 @@ type Plain interface {
 	ServerPostDecrypt(buf []byte) ([]byte, bool, error)
 	ClientUDPPreEncrypt(buf []byte) ([]byte, error)
 	ClientUDPPostDecrypt(buf []byte) ([]byte, error)
-	ServerUDPPreEncrypt(buf,uid []byte) ([]byte, error)
+	ServerUDPPreEncrypt(buf, uid []byte) ([]byte, error)
 	ServerUDPPostDecrypt(buf []byte) ([]byte, string, error)
 	Dispose()
 	GetHeadSize(buf []byte, defaultValue int) int
@@ -41,7 +41,7 @@ func registerMethod(method string, factory PlainFactory) {
 	method_supported[method] = factory
 }
 
-func GetObfs(method string) (Plain,error){
+func GetObfs(method string) (Plain, error) {
 	factory, exist := method_supported[method]
 	if !exist { // 直接调用取不到的工厂是 nil 调用：会在每条连接里 panic，被连接级 recover 吞成一行日志，
 		// 面板只看到心跳正常、在线为 0，节点侧却已经全线连不上

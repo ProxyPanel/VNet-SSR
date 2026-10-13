@@ -11,10 +11,10 @@ type plain struct {
 }
 
 // NewPlain construct a new plain and initliza default value
-func NewPlain(method string) (Plain,error) {
+func NewPlain(method string) (Plain, error) {
 	return &plain{
 		Method: method,
-	},nil
+	}, nil
 }
 
 func (p *plain) GetMethod() string {
@@ -49,7 +49,7 @@ func (p *plain) ClientEncode(buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
-//ClientDecode buffer_to_recv, is_need_to_encode_and_send_back
+// ClientDecode buffer_to_recv, is_need_to_encode_and_send_back
 func (p *plain) ClientDecode(buf []byte) ([]byte, bool, error) {
 	return buf, false, nil
 }
@@ -66,7 +66,7 @@ func (p *plain) ServerEncode(buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
-//buffer_to_recv, is_need_decrypt, is_need_to_encode_and_send_back
+// buffer_to_recv, is_need_decrypt, is_need_to_encode_and_send_back
 func (p *plain) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 	return buf, true, false, nil
 }
@@ -83,7 +83,7 @@ func (p *plain) ClientUDPPostDecrypt(buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
-func (p *plain) ServerUDPPreEncrypt(buf,uid []byte) ([]byte, error) {
+func (p *plain) ServerUDPPreEncrypt(buf, uid []byte) ([]byte, error) {
 	return buf, nil
 }
 

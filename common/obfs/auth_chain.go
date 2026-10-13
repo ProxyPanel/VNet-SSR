@@ -8,6 +8,7 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/ProxyPanel/VNet-SSR/utils/langx"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,7 +30,21 @@ const (
 
 func init() {
 	registerMethod("auth_chain_a", NewAuthChainA)
+	registerMethod("auth_chain_b", NewAuthChainB)
+	registerMethod("auth_chain_c", NewAuthChainC)
+	registerMethod("auth_chain_d", NewAuthChainD)
+	registerMethod("auth_chain_e", NewAuthChainE)
+	registerMethod("auth_chain_f", NewAuthChainF)
 }
+
+const (
+	chainModeA = iota
+	chainModeB
+	chainModeC
+	chainModeD
+	chainModeE
+	chainModeF
+)
 
 type XorShift128Plus struct {
 	V0 uint64
@@ -94,16 +109,48 @@ type AuthChainA struct {
 	RandomClient   *XorShift128Plus
 	RandomServer   *XorShift128Plus
 	Encryptor      *ciphers.Encryptor
+	// b~f 的补全长度表：同一连接内固定，由服务端 key 派生，两端算出的表必须逐字节一致
+	Mode             int
+	DataSizeList     []int
+	DataSizeList2    []int
+	DataSizeList0    []int
+	KeyChangeInterva int64
+	// 只有服务端在收到 auth 头后推进；0 = 未轮换（客户端恒为此值）
+	keyChangeDatetimeKey int64
 }
 
 func NewAuthChainA(method string) (Plain, error) {
+	return newAuthChain(method, chainModeA)
+}
+
+func NewAuthChainB(method string) (Plain, error) {
+	return newAuthChain(method, chainModeB)
+}
+
+func NewAuthChainC(method string) (Plain, error) {
+	return newAuthChain(method, chainModeC)
+}
+
+func NewAuthChainD(method string) (Plain, error) {
+	return newAuthChain(method, chainModeD)
+}
+
+func NewAuthChainE(method string) (Plain, error) {
+	return newAuthChain(method, chainModeE)
+}
+
+func NewAuthChainF(method string) (Plain, error) {
+	return newAuthChain(method, chainModeF)
+}
+
+func newAuthChain(method string, mode int) (Plain, error) {
 	authBase, err := NewAuthBase(method)
 	if err != nil {
 		return nil, err
 	}
 	authBase.RawTrans = false
 	authBase.Overhead = 4
-	authBase.NoCompatibleMethod = "auth_chain_a"
+	authBase.NoCompatibleMethod = method
 	return &AuthChainA{
 		AuthBase:       authBase,
 		RecvBuf:        []byte{},
@@ -113,7 +160,7 @@ func NewAuthChainA(method string) (Plain, error) {
 		ClientID:       0,
 		ConnectionID:   0,
 		MaxTimeDif:     60 * 60 * 24,
-		Salt:           []byte("auth_chain_a"),
+		Salt:           []byte(method),
 		PackID:         1,
 		RecvID:         1,
 		UserIDNum:      0,
@@ -122,15 +169,116 @@ func NewAuthChainA(method string) (Plain, error) {
 		LastServerHash: []byte{},
 		RandomClient:   NewXorShift128Plus(),
 		RandomServer:   NewXorShift128Plus(),
+		Mode:           mode,
 	}, nil
-}
-
-func (a *AuthChainA) GetOverhead(direction bool) int {
-	return a.Overhead
 }
 
 func (a *AuthChainA) SetServerInfo(s ServerInfo) {
 	a.AuthBase.SetServerInfo(s)
+	if a.Mode == chainModeA {
+		return
+	}
+	// protocol_param 形如 max_client[#轮换秒数]
+	maxClient := 64
+	interval := int64(60 * 60 * 24)
+	items := strings.SplitN(s.GetProtocolParam(), "#", 2)
+	if v, err := strconv.Atoi(items[0]); err == nil {
+		maxClient = v
+	}
+	if a.Mode == chainModeF && len(items) > 1 {
+		if v, err := strconv.ParseInt(items[1], 10, 64); err == nil && v > 0 {
+			interval = v
+		}
+	}
+	core.GetApp().GetObfsProtocolService().SetMaxClient(maxClient)
+	a.KeyChangeInterva = interval
+	if a.Mode == chainModeF {
+		// 建连时两端各自按「当前时间桶」建表；服务端收到 auth 头后再按包头里的 utc_time 重算，
+		// 时钟漂移跨过桶界的连接按上游语义自然失配
+		a.keyChangeDatetimeKey = time.Now().Unix() / interval
+	}
+	a.initDataSize(s.GetKey())
+}
+
+// initDataSize 用服务端 key 生成补全表；f 模式按时间桶轮换 key（见 onRecvAuthData）
+func (a *AuthChainA) initDataSize(key []byte) {
+	random := NewXorShift128Plus()
+	if a.Mode == chainModeF {
+		random.InitFromBin(a.rotatedKey(key))
+	} else {
+		random.InitFromBin(key)
+	}
+	next := func() int { return int(random.Next() % 2340 % 2040 % 1440) }
+
+	if a.Mode == chainModeB {
+		a.DataSizeList = a.DataSizeList[:0]
+		a.DataSizeList2 = a.DataSizeList2[:0]
+		for i := 0; i < int(random.Next()%8+4); i++ {
+			a.DataSizeList = append(a.DataSizeList, next())
+		}
+		sort.Ints(a.DataSizeList)
+		for i := 0; i < int(random.Next()%16+8); i++ {
+			a.DataSizeList2 = append(a.DataSizeList2, next())
+		}
+		sort.Ints(a.DataSizeList2)
+		return
+	}
+
+	a.DataSizeList0 = a.DataSizeList0[:0]
+	for i := 0; i < int(random.Next()%(8+16)+(4+8)); i++ {
+		a.DataSizeList0 = append(a.DataSizeList0, next())
+	}
+	sort.Ints(a.DataSizeList0)
+	if a.Mode == chainModeD || a.Mode == chainModeE || a.Mode == chainModeF {
+		oldLen := len(a.DataSizeList0)
+		a.checkAndPatchDataSize(random)
+		if oldLen != len(a.DataSizeList0) {
+			sort.Ints(a.DataSizeList0)
+		}
+	}
+}
+
+func (a *AuthChainA) checkAndPatchDataSize(random *XorShift128Plus) {
+	if a.DataSizeList0[len(a.DataSizeList0)-1] < 1300 && len(a.DataSizeList0) < 64 {
+		a.DataSizeList0 = append(a.DataSizeList0, int(random.Next()%2340%2040%1440))
+		a.checkAndPatchDataSize(random)
+	}
+}
+
+// rotatedKey：recv_iv ^ md5(recv_iv)[0:4] 按大端铺开成 8 字节再异或进 key 前 8 字节。
+// 桶号由建连时间与 auth 包头时间共同决定，两端算进同一桶才会有同一张表
+func (a *AuthChainA) rotatedKey(key []byte) []byte {
+	if a.keyChangeDatetimeKey == 0 {
+		return key
+	}
+	iv := a.GetServerInfo().GetRecvIv()
+	datetimeKey := binaryx.LEBytesToUInt32(iv) ^ binaryx.LEBytesToUInt32(hmacmd5(iv, iv)[:4])
+	out := append([]byte{}, key...)
+	for i := 0; i < 8 && i < len(out); i++ {
+		out[i] ^= byte(datetimeKey >> (8 * (7 - i)))
+	}
+	return out
+}
+
+// onRecvAuthData 只重算服务端一侧的包长表；桶的判据是包头 utc_time，两端各自算出同一个值
+func (a *AuthChainA) onRecvAuthData(utcTime uint32) {
+	if a.Mode != chainModeF {
+		return
+	}
+	interval := a.KeyChangeInterva
+	if interval <= 0 {
+		interval = 60 * 60 * 24
+	}
+	a.keyChangeDatetimeKey = int64(utcTime) / interval
+	a.initDataSize(a.GetServerInfo().GetKey())
+}
+
+func bisectLeft(list []int, v int) int {
+	return sort.SearchInts(list, v)
+}
+
+func (a *AuthChainA) GetOverhead(direction bool) int {
+	return a.Overhead
 }
 
 func (a *AuthChainA) ClientPreEncrypt(buf []byte) (result []byte, err error) {
@@ -288,7 +436,7 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 		var uidPack []byte
 
 		// 与 auth_aes128 同一约定：解出的这 4 字节线格式叫 uid，本面板装的是用户端口，
-		// 所以拿它去查以端口打包为键的密码表，再经 UpdateUser 写回 UserPort
+		// 所以拿它去查以身份编号打包为键的密码表，再经 UpdateUser 写回会话身份
 		uid = int(binaryx.LEBytesToUInt32(a.RecvBuf[12:16]) ^ binaryx.LEBytesToUInt32(md5Data[8:12]))
 		a.UserIDNum = uid
 		uidPack = binaryx.LEUint32ToBytes(uint32(uid))
@@ -345,6 +493,7 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 			a.HasRecvHeader = true
 			a.ClientID = int(clientId)
 			a.ConnectionID = connectionId
+			a.onRecvAuthData(utcTime)
 		} else {
 			log.Info("%s: auth fail, data %s", a.NoCompatibleMethod, hex.EncodeToString(result))
 			result, sendback = a.NotMatchReturn(a.RecvBuf)
@@ -573,6 +722,16 @@ func (a *AuthChainA) trapezoidRandomInt(maxVal, d float64) int {
 }
 
 func (a *AuthChainA) rndDataLen(bufSize int, lastHash []byte, random *XorShift128Plus) int {
+	switch a.Mode {
+	case chainModeB:
+		return a.rndDataLenB(bufSize, lastHash, random)
+	case chainModeC:
+		return a.rndDataLenC(bufSize, lastHash, random)
+	case chainModeD:
+		return a.rndDataLenD(bufSize, lastHash, random)
+	case chainModeE, chainModeF:
+		return a.rndDataLenE(bufSize, lastHash, random)
+	}
 	if bufSize > 1440 {
 		return 0
 	}
@@ -587,6 +746,84 @@ func (a *AuthChainA) rndDataLen(bufSize int, lastHash []byte, random *XorShift12
 		return int(random.Next() % 521)
 	}
 	return int(random.Next() % 1021)
+}
+
+// b：两段补全表依次尝试，落不进任何桶才退回 a 的梯形分布
+func (a *AuthChainA) rndDataLenB(bufSize int, lastHash []byte, random *XorShift128Plus) int {
+	if bufSize >= 1440 {
+		return 0
+	}
+	random.InitFromBinLen(lastHash, bufSize)
+	target := bufSize + a.Overhead
+	pos := bisectLeft(a.DataSizeList, target)
+	if final := pos + int(random.Next()%uint64(len(a.DataSizeList))); final < len(a.DataSizeList) {
+		return a.DataSizeList[final] - target
+	}
+	pos = bisectLeft(a.DataSizeList2, target)
+	finalPos := pos + int(random.Next()%uint64(len(a.DataSizeList2)))
+	if finalPos < len(a.DataSizeList2) {
+		return a.DataSizeList2[finalPos] - target
+	}
+	if finalPos < pos+len(a.DataSizeList2)-1 {
+		return 0
+	}
+	if bufSize > 1300 {
+		return int(random.Next() % 31)
+	}
+	if bufSize > 900 {
+		return int(random.Next() % 127)
+	}
+	if bufSize > 400 {
+		return int(random.Next() % 521)
+	}
+	return int(random.Next() % 1021)
+}
+
+// c：单表，超过最大桶仍按 a 的分段补，桶内随机选一个
+func (a *AuthChainA) rndDataLenC(bufSize int, lastHash []byte, random *XorShift128Plus) int {
+	other := bufSize + a.Overhead
+	random.InitFromBinLen(lastHash, bufSize)
+	if other >= a.DataSizeList0[len(a.DataSizeList0)-1] {
+		if other >= 1440 {
+			return 0
+		}
+		if other > 1300 {
+			return int(random.Next() % 31)
+		}
+		if other > 900 {
+			return int(random.Next() % 127)
+		}
+		if other > 400 {
+			return int(random.Next() % 521)
+		}
+		return int(random.Next() % 1021)
+	}
+	pos := bisectLeft(a.DataSizeList0, other)
+	finalPos := pos + int(random.Next()%uint64(len(a.DataSizeList0)-pos))
+	return a.DataSizeList0[finalPos] - other
+}
+
+// d：超过最大桶就不补（包长分布不再有长尾）
+func (a *AuthChainA) rndDataLenD(bufSize int, lastHash []byte, random *XorShift128Plus) int {
+	other := bufSize + a.Overhead
+	if other >= a.DataSizeList0[len(a.DataSizeList0)-1] {
+		return 0
+	}
+	random.InitFromBinLen(lastHash, bufSize)
+	pos := bisectLeft(a.DataSizeList0, other)
+	finalPos := pos + int(random.Next()%uint64(len(a.DataSizeList0)-pos))
+	return a.DataSizeList0[finalPos] - other
+}
+
+// e/f：固定取最小补齐尺寸，不随机
+func (a *AuthChainA) rndDataLenE(bufSize int, lastHash []byte, random *XorShift128Plus) int {
+	random.InitFromBinLen(lastHash, bufSize)
+	other := bufSize + a.Overhead
+	if other >= a.DataSizeList0[len(a.DataSizeList0)-1] {
+		return 0
+	}
+	pos := bisectLeft(a.DataSizeList0, other)
+	return a.DataSizeList0[pos] - other
 }
 
 func (a *AuthChainA) udpRndDataLen(lastHash []byte, random *XorShift128Plus) int {
@@ -622,7 +859,8 @@ func (a *AuthChainA) packClientData(buf []byte) ([]byte, error) {
 		return nil, err
 	}
 	data := a.rndData(len(buf), buf, a.LastClientHash, a.RandomClient)
-	macKey := bytesx.ContactSlice(a.UserKey, binaryx.BEUInt32ToBytes(a.PackID))
+	// macKey 里的 PackID 按小端 4 字节（与 packServerData 用同一个函数）：这是与参考实现一致的线格式
+	macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(a.PackID))
 	length := len(buf) ^ int(binaryx.LEBytesToUint16(a.LastClientHash[14:]))
 	data = bytesx.ContactSlice(binaryx.LEUInt16ToBytes(uint16(length)), data)
 	a.LastClientHash = hmacmd5(macKey, data)
