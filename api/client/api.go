@@ -39,7 +39,7 @@ const (
 )
 
 func init() {
-	// 不再设 InsecureSkipVerify：跳过证书校验等于任何中间人都能冒充面板下发用户表与节点配置
+	// 不设 InsecureSkipVerify：跳过证书校验等于任何中间人都能冒充面板，下发用户表与节点配置
 	restyc = resty.New().
 		SetTimeout(5 * time.Second).
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
@@ -248,66 +248,36 @@ func parseUserList(response string) ([]*model.UserInfo, error) {
 	return result, nil
 }
 
-func PostAllUserTraffic(allUserTraffic []*model.UserTraffic) error {
-	value, err := post(fmt.Sprintf("%s/userTraffic/%s", Host, strconv.Itoa(core.GetApp().NodeId())),
+// postJSON 序列化 payload、POST 到带节点 ID 的面板端点，按 envelope 的 status 判成败
+func postJSON(path string, payload interface{}) error {
+	value, err := post(fmt.Sprintf("%s/%s/%s", Host, path, strconv.Itoa(core.GetApp().NodeId())),
 		string(langx.Must(func() (interface{}, error) {
-			return json.Marshal(allUserTraffic)
+			return json.Marshal(payload)
 		}).([]byte)))
-
 	if err != nil {
 		return err
 	}
 	if gjson.Get(value, "status").String() != "success" {
-		return errors.New(gjson.Get(value, "message").String())
+		return errors.New(stringx.UnicodeToUtf8(gjson.Get(value, "message").String()))
 	}
 	return nil
+}
+
+func PostAllUserTraffic(allUserTraffic []*model.UserTraffic) error {
+	return postJSON("userTraffic", allUserTraffic)
 }
 
 func PostNodeOnline(nodeOnline []*model.NodeOnline) error {
-	value, err := post(fmt.Sprintf("%s/nodeOnline/%s", Host, strconv.Itoa(core.GetApp().NodeId())),
-		string(langx.Must(func() (interface{}, error) {
-			return json.Marshal(nodeOnline)
-		}).([]byte)))
-
-	if err != nil {
-		return err
-	}
-
-	if gjson.Get(value, "status").String() != "success" {
-		return errors.New(stringx.UnicodeToUtf8(gjson.Get(value, "message").String()))
-	}
-	return nil
+	return postJSON("nodeOnline", nodeOnline)
 }
 
 func PostNodeStatus(status model.NodeStatus) error {
-	value, err := post(fmt.Sprintf("%s/nodeStatus/%s", Host, strconv.Itoa(core.GetApp().NodeId())),
-		string(langx.Must(func() (interface{}, error) {
-			return json.Marshal(status)
-		}).([]byte)))
-
-	if err != nil {
-		return err
-	}
-	if gjson.Get(value, "status").String() != "success" {
-		return errors.New(stringx.UnicodeToUtf8(gjson.Get(value, "message").String()))
-	}
-	return nil
+	return postJSON("nodeStatus", status)
 }
 
 // PostTrigger when user trigger audit rules then report
 func PostTrigger(trigger model.Trigger) error {
-	value, err := post(fmt.Sprintf("%s/trigger/%s", Host, strconv.Itoa(core.GetApp().NodeId())),
-		string(langx.Must(func() (interface{}, error) {
-			return json.Marshal(trigger)
-		}).([]byte)))
-
-	if err != nil {
-		return err
-	}
-	if gjson.Get(value, "status").String() != "success" {
-		return errors.New(stringx.UnicodeToUtf8(gjson.Get(value, "message").String()))
-	}
-	return nil
+	return postJSON("trigger", trigger)
 }
 
 // GetNodeRule Get Node Rule

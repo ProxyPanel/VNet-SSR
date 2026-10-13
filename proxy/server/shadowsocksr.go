@@ -12,6 +12,7 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/utils/binaryx"
 	"github.com/ProxyPanel/VNet-SSR/utils/goroutine"
 	"github.com/ProxyPanel/VNet-SSR/utils/netx"
+	"github.com/ProxyPanel/VNet-SSR/utils/sniff"
 	"github.com/ProxyPanel/VNet-SSR/utils/socksproxy"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -112,23 +113,30 @@ func (ssr *ShadowsocksRProxy) StartTCP() error {
 				}
 				return
 			}
-			ssr.handleStageAddr(ssrd.UserPort, ssrd.RemoteAddr().String(), ssrd.LocalAddr().String(), addr.String(), "tcp")
-			log.Info("reslove addr success: %s requestId: %s", addr.String(), ssrd.GetRequestId())
+			ssr.handleStageAddr(ssrd.Identity, ssrd.RemoteAddr().String(), ssrd.LocalAddr().String(), addr.String(), "tcp")
+			log.Info("resolve addr success: %s requestId: %s", addr.String(), ssrd.GetRequestId())
 
-			if ssr.HostFirewall != nil && !ssr.HostFirewall.JudgeHostWithReport(addr.GetAddress(), ssrd.UserPort) {
-				log.Info("%s is reject", addr.String())
-				body := fmt.Sprintf("%s is reject", addr.String())
-				t := &http.Response{
-					Status:        "200 OK",
-					StatusCode:    200,
-					Proto:         "HTTP/1.1",
-					ProtoMajor:    1,
-					ProtoMinor:    1,
-					Body:          ioutil.NopCloser(bytes.NewBufferString(body)),
-					ContentLength: int64(len(body)),
-					Header:        make(http.Header, 0),
+			// 首包嗅探：目标只有 IP 时（客户端本地解析后直连），HTTP Host/TLS SNI 是唯一的域名级审计素材
+			sniffed := sniff.Sniff(ssrd.PeekPlain())
+			ev := core.AuditContext{
+				Target:        addr.String(),
+				SniffProtocol: sniffed.Protocol,
+				SniffHost:     sniffed.Host,
+				SniffUri:      sniffed.URL,
+			}
+
+			rejected := false
+			if ssr.HostFirewall != nil {
+				if !ssr.HostFirewall.JudgeHostWithReport(addr.GetAddress(), ssrd.Identity, ev) {
+					rejected = true
+				} else if sniffed.Host != "" && !strings.EqualFold(sniffed.Host, addr.GetAddress()) &&
+					!ssr.HostFirewall.JudgeHostWithReport(sniffed.Host, ssrd.Identity, ev) {
+					rejected = true
 				}
-				_ = t.Write(ssrd)
+			}
+			if rejected {
+				log.Info("%s is reject (sniffed: %s %s)", addr.String(), sniffed.Protocol, sniffed.Host)
+				ssr.writeRejectResponse(ssrd, addr, sniffed)
 				return
 			}
 
@@ -175,7 +183,7 @@ func (ssr *ShadowsocksRProxy) StartUDP() error {
 					"error":     err,
 				}).Error("shadowsocksr NewShadowsocksRDecorate error")
 			}
-			// TODO UDP TIMEOUT
+			// 参数单位是秒（MapTimeCopy 里乘 time.Second）：同一客户端会话空闲 30 秒即拆表
 			udpMap := NewShadowsocksRUDPMap(30)
 			for {
 				data, uid, addr, err := ssrd.ReadFrom()
@@ -237,24 +245,22 @@ func (ssr *ShadowsocksRProxy) StartUDP() error {
 				}
 				ssr.handleStageAddr(int(binaryx.LEBytesToUInt32(uid)), addr.String(), ssrd.PacketConn.LocalAddr().String(), remoteAddr.String(), "udp")
 
-				if ssr.HostFirewall != nil && !ssr.HostFirewall.JudgeHostWithReport(addr.String(), int(binaryx.LEBytesToUInt32(uid))) {
-					return
+				// 判定对象是代理目标，不是客户端源地址：传错等于拿访客 IP 去撞域名规则
+				udpEv := core.AuditContext{Target: remoteAddr.String()}
+				if ssr.HostFirewall != nil && !ssr.HostFirewall.JudgeHostWithReport(remoteAddr.GetAddress(), int(binaryx.LEBytesToUInt32(uid)), udpEv) {
+					continue
 				}
 
-				//udpMap.Add(addr, ssrd, remotePacketConn)
 				_, err = remotePacketConn.WriteTo(data, remoteAddrResolve)
 				if err != nil {
-					if err != nil {
-						logrus.WithFields(logrus.Fields{
-							"remoteAddr": remoteAddr.String(),
-							"serverAddr": ssrd.PacketConn.LocalAddr().String(),
-							"clientAddr": addr.String(),
-							"uid":        binaryx.LEBytesToUInt32(uid),
-							"err":        err,
-						}).Error("shadowoscksr listenPacket udp error")
-						continue
-					}
-					//udpMap.Add(addr, ssrd, remotePacketConn)
+					logrus.WithFields(logrus.Fields{
+						"remoteAddr": remoteAddr.String(),
+						"serverAddr": ssrd.PacketConn.LocalAddr().String(),
+						"clientAddr": addr.String(),
+						"uid":        binaryx.LEBytesToUInt32(uid),
+						"err":        err,
+					}).Error("shadowsocksr udp write remote error")
+					continue
 				}
 			}
 		}()
@@ -262,37 +268,67 @@ func (ssr *ShadowsocksRProxy) StartUDP() error {
 	return err
 }
 
-func (ssr *ShadowsocksRProxy) handleStageAddr(port int, client, server, proxyTarget, network string) {
-	if port == 0 {
+// writeRejectResponse 对被拒连接伪造应用层应答：HTTP 语义的流量（目标 80 或首包嗅出 http）
+// 才注入明文应答——回 302（面板配了 redirect_url 时）或 403；其余（含 TLS）不注入解析不了的明文，直接断开
+func (ssr *ShadowsocksRProxy) writeRejectResponse(ssrd *network.ShadowsocksRDecorate, addr *socksproxy.Socks5Addr, sniffed sniff.Result) {
+	if addr.GetPort() != 80 && sniffed.Protocol != sniff.ProtocolHTTP {
+		return
+	}
+
+	resp := &http.Response{
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header),
+	}
+	if nodeInfo := core.GetApp().NodeInfo(); nodeInfo != nil &&
+		(strings.HasPrefix(nodeInfo.RedirectUrl, "http://") || strings.HasPrefix(nodeInfo.RedirectUrl, "https://")) {
+		resp.StatusCode = http.StatusFound
+		resp.Status = "302 Found"
+		resp.Header.Set("Location", nodeInfo.RedirectUrl)
+		resp.ContentLength = 0
+	} else {
+		body := "访问被节点审计规则拒绝"
+		resp.StatusCode = http.StatusForbidden
+		resp.Status = "403 Forbidden"
+		resp.Header.Set("Content-Type", "text/plain; charset=utf-8")
+		resp.Body = ioutil.NopCloser(bytes.NewBufferString(body))
+		resp.ContentLength = int64(len(body))
+	}
+	_ = resp.Write(ssrd)
+}
+
+func (ssr *ShadowsocksRProxy) handleStageAddr(identity int, client, server, proxyTarget, network string) {
+	if identity == 0 {
 		logrus.WithFields(logrus.Fields{
-			"port":        port,
+			"identity":    identity,
 			"client":      client,
 			"server":      server,
 			"proxyTarget": proxyTarget,
-		}).Warn("handleStageAddr port is 0")
+		}).Warn("handleStageAddr identity is 0")
 		return
 	}
 	if ssr.OnlineReport != nil {
-		ssr.OnlineReport.Online(port, client)
+		ssr.OnlineReport.Online(identity, client)
 	}
 }
 
 // AddUser 用端口做密码表的键：auth 包那 4 字节（SSR 线格式里叫 uid）按本面板约定装的就是端口
-func (ssr *ShadowsocksRProxy) AddUser(port int, password string) {
+func (ssr *ShadowsocksRProxy) AddUser(identity int, password string) {
 	if ssr.Users == nil {
 		ssr.Users = make(map[string]string)
 	}
-	uidPack := binaryx.LEUint32ToBytes(uint32(port))
+	uidPack := binaryx.LEUint32ToBytes(uint32(identity))
 	logrus.Debugf("shadowsocksr adduser uidPack: %s", hex.EncodeToString(uidPack))
 	uidPackStr := string(uidPack)
 	ssr.Users[uidPackStr] = password
 }
 
-func (ssr *ShadowsocksRProxy) DelUser(port int) {
+func (ssr *ShadowsocksRProxy) DelUser(identity int) {
 	if ssr.Users == nil {
 		return
 	}
-	uidPack := string(binaryx.LEUint32ToBytes(uint32(port)))
+	uidPack := string(binaryx.LEUint32ToBytes(uint32(identity)))
 	delete(ssr.Users, uidPack)
 }
 
@@ -346,7 +382,7 @@ func (m *ShadowsocksRUDPMap) Del(key string) *ShadowsocksRUDPMapItem {
 func (m *ShadowsocksRUDPMap) Add(client net.Addr, server *network.ShadowsocksRDecorate, remoteServer *ShadowsocksRUDPMapItem) {
 	m.Set(client.String(), remoteServer)
 	go goroutine.Protect(func() {
-		//TODO defer recover
+		// 双层兜底：Protect 与 ShadowsocksRMapTimeCopy 内部各有一次 recover
 		_ = ShadowsocksRMapTimeCopy(server, client, remoteServer, m.timeout)
 		if pc := m.Del(client.String()); pc != nil {
 			_ = pc.Close()

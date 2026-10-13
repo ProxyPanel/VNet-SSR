@@ -151,8 +151,19 @@ func InitRouter() *gin.Engine {
 		r2.POST("/user/del/list", UsersDel)
 		r2.POST("/user/add/list", UsersAdd)
 		r2.POST("/node/reload", NodeReload)
+		r2.POST("/rule/reload", RuleReload)
 	}
 	return r
+}
+
+// RuleReload 只重拉审计规则，不重建监听器、不断在线连接；拉取失败保留旧规则集并回错误，
+// 面板队列按作业的 $tries 重试
+func RuleReload(c *gin.Context) {
+	if err := service.GetRuleService().LoadFromApi(); err != nil {
+		fail(c, errors.Wrap(err, "reload rule failed, old rule set kept"))
+		return
+	}
+	success(c)
 }
 
 func UsersAdd(c *gin.Context) {

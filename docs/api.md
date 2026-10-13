@@ -32,11 +32,12 @@
 | 通道 | 触发 | 频率 | 作用 |
 | --- | --- | --- | --- |
 | 全量拉取 | 节点启动、`api/v2/node/reload` | 事件驱动 | 用户集合 + 节点配置 + 审计规则 |
-| 增量推送 | 面板的 `UserObserver` / `NodeObserver` | 即时 | 账号增删改、节点配置变更 |
+| 增量推送 | 面板的 `UserObserver` / `NodeObserver`；规则保存后的 `ReloadRule` | 即时 | 账号增删改、节点配置变更、审计规则重拉（`api/v2/rule/reload`，只重拉规则不断在线连接） |
 | 双向对账 | 面板 `vnet:reconcile`；节点周期同步 | 面板每 10 分钟；节点每 5 分钟 | 只增删用户，不 reload，所以不断在线连接 |
 
 推送是加速器，一致性由对账兜住：推送丢一次（节点重启、队列积压、网络抖动）会让已禁用或到期的账号
-长期留在节点上，最长 5 分钟后被收敛。
+长期留在节点上，最长 5 分钟后被收敛。审计规则没有周期轮询：`ReloadRule` 队列按 `$tries` 重试，
+节点此刻不在跑则重启时自拉全量；规则拉取失败时节点保留旧规则集。
 
 ## 4. 幂等与失败判据
 
@@ -52,8 +53,8 @@
   宁可少扣也不要漏账。
 * 「拉不到集合」与「集合为空」必须区分：`GET /api/user/list` 的 `[]` 是「节点上没人」，
   鉴权失败/非 2xx/传输异常是另一回事。把前者当后者会让整节点用户被当成缺漏重推。
-* 审计规则里 `type = protocol` 本后端不实现（静默忽略）；`client_limit` 只在
-  `auth_aes128_md5`/`auth_aes128_sha1`/`auth_chain_a` 下生效。
+* 审计规则里 `type = protocol` 本后端不实现（静默忽略）；`client_limit` 只在带连接跟踪的
+  `auth_sha1_v4`/`auth_aes128_md5`/`auth_aes128_sha1`/`auth_chain_a`~`auth_chain_f` 下生效。
 
 ## 5. 算法名单怎么维护（面板侧镜像的来源）
 
@@ -143,10 +144,9 @@ php artisan vnet:reload
 
 一条 TCP 连接结束会在 `netx.DuplexCopyTcp` 的两个方向各收口一次。该函数在一个方向先结束时，
 会把两侧 deadline 设到过去以叫醒另一个方向，所以「对端读超时」是这套唤醒机制的正常产物，不是网络故障。
-旧实现把两个方向都按 error 级打出来（实测约 5500 行/小时），真异常会被淹掉。
-
-现在的判据：按「方向 × 结束原因」计数，明细降到 debug；`conn_reset` / `short_write` / `other`
-这类真异常在该分钟内只留一条 error 样本（带 `requestId` 可定位）。每分钟由 `ReportTask` 打一行摘要：
+两个方向都按 error 级逐条打会把真异常淹掉（实测过约 5500 行/小时），所以判据是按「方向 × 结束原因」计数、
+明细降到 debug；`conn_reset` / `short_write` / `other` 这类真异常在该分钟内只留一条 error 样本
+（带 `requestId` 可定位）。每分钟由 `ReportTask` 打一行摘要：
 
 ```
 copy ended last minute: active_uids=214 up_eof=1200 down_peer_closed=1180 up_conn_reset=3

@@ -51,6 +51,14 @@ func (l *lrucache) Delete(key interface{}) {
 	l.mapping.Delete(key)
 }
 
+// Clear 移除全部键：规则集整体换掉时，旧判定必须跟着作废
+func (l *lrucache) Clear() {
+	l.mapping.Range(func(k, _ interface{}) bool {
+		l.mapping.Delete(k)
+		return true
+	})
+}
+
 func (l *lrucache) IsExist(key interface{}) bool {
 	_, exist := l.mapping.Load(key)
 	return exist

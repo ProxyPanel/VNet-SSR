@@ -31,7 +31,7 @@ func GetSSRManager() *SSRManager {
 }
 
 type AddUserHandle func(*model.UserInfo)
-type DelUserHandle func(int)
+type DelUserHandle func(*model.UserInfo)
 
 func NewShadowsocksrService() *SSRManager {
 	return &SSRManager{
@@ -43,6 +43,7 @@ func NewShadowsocksrService() *SSRManager {
 		onlineLock:    new(sync.Mutex),
 		userTable:     make(map[int]*model.UserInfo),
 		userTableLock: new(sync.Mutex),
+		identityIndex: make(map[int]int),
 		UpTime:        time.Now(),
 		bootStamp:     time.Now().Unix(),
 	}
@@ -50,13 +51,16 @@ func NewShadowsocksrService() *SSRManager {
 
 type SSRManager struct {
 	sync.Locker
-	Shadowsocksrs  map[int]*server.ShadowsocksRProxy
-	traffic        map[int]*model.UserTraffic
-	trafficLock    *sync.Mutex
-	online         map[int]*model.NodeOnline
-	onlineLock     *sync.Mutex
-	userTable      map[int]*model.UserInfo
-	userTableLock  *sync.Mutex
+	Shadowsocksrs map[int]*server.ShadowsocksRProxy
+	traffic       map[int]*model.UserTraffic
+	trafficLock   *sync.Mutex
+	online        map[int]*model.NodeOnline
+	onlineLock    *sync.Mutex
+	userTable     map[int]*model.UserInfo
+	userTableLock *sync.Mutex
+	// identityIndex 是「线上身份编号 → uid」的 O(1) 反查表；身份编号两种模式下都是端口
+	// （单端口下它不参与监听、只当账号编号用，auth 包头的 4 字节装的就是它；面板建号时已保证端口全局唯一）
+	identityIndex  map[int]int
 	UpTime         time.Time
 	addUserHandles []AddUserHandle
 	delUserHanelds []DelUserHandle
@@ -68,61 +72,32 @@ type SSRManager struct {
 	reportSeq      uint64
 }
 
-func (s *SSRManager) uidToPortLocked(uid int) int {
-	if user := s.userTable[uid]; user != nil {
-		return user.Port
-	}
-	return 0
-}
-
-func (s *SSRManager) UIDToPort(uid int) int {
+// IdentityToUid 按线上身份编号反查账号，查不到返回 0
+func (s *SSRManager) IdentityToUid(identity int) int {
 	s.userTableLock.Lock()
-	result := s.uidToPortLocked(uid)
+	uid := s.identityIndex[identity]
 	s.userTableLock.Unlock()
-	return result
+	return uid
 }
 
-func (s *SSRManager) portToUidLocked(port int) int {
-	for _, value := range s.userTable {
-		if value.Port == port {
-			return value.Uid
-		}
-	}
-	return 0
+func (s *SSRManager) Upload(identity int, n int64) {
+	s.addTraffic(identity, n, 0)
 }
 
-func (s *SSRManager) PortToUid(port int) int {
-	s.userTableLock.Lock()
-	result := s.portToUidLocked(port)
-	s.userTableLock.Unlock()
-	return result
+func (s *SSRManager) Download(identity int, n int64) {
+	s.addTraffic(identity, 0, n)
 }
 
-func (s *SSRManager) Upload(port int, n int64) {
+func (s *SSRManager) addTraffic(identity int, up, down int64) {
 	s.trafficLock.Lock()
-	uid := s.PortToUid(port)
-	if s.traffic[uid] != nil {
-		s.traffic[uid].Upload += n
-	} else {
-		traffic := new(model.UserTraffic)
-		traffic.Upload += n
-		traffic.Uid = uid
-		s.traffic[uid] = traffic
+	uid := s.IdentityToUid(identity)
+	row := s.traffic[uid]
+	if row == nil {
+		row = &model.UserTraffic{Uid: uid}
+		s.traffic[uid] = row
 	}
-	s.trafficLock.Unlock()
-}
-
-func (s *SSRManager) Download(port int, n int64) {
-	s.trafficLock.Lock()
-	uid := s.PortToUid(port)
-	if s.traffic[uid] != nil {
-		s.traffic[uid].Download += n
-	} else {
-		traffic := new(model.UserTraffic)
-		traffic.Download += n
-		traffic.Uid = uid
-		s.traffic[uid] = traffic
-	}
+	row.Upload += up
+	row.Download += down
 	s.trafficLock.Unlock()
 }
 
@@ -170,12 +145,12 @@ func (s *SSRManager) requeueTraffic(data []*model.UserTraffic) {
 	s.pendingTraffic = data
 }
 
-func (s *SSRManager) Online(port int, ip string) {
+func (s *SSRManager) Online(identity int, ip string) {
 	s.onlineLock.Lock()
 	defer s.onlineLock.Unlock()
-	uid := s.PortToUid(port)
+	uid := s.IdentityToUid(identity)
 	if uid == 0 {
-		log.Error("catch port %v but uid is 0", port)
+		log.Error("catch identity %v but uid is 0", identity)
 		return
 	}
 	ip = addrx.SplitIpFromAddr(ip)
@@ -308,7 +283,7 @@ func (s *SSRManager) applyUser(user *model.UserInfo) error {
 		return nil
 	}
 
-	// 缺 port/passwd 的行不能落：port 0 会真的去绑一个随机端口，空密码等于开放账号
+	// 缺 port/passwd 的行不能落：port 0 会真的去绑一个随机端口（多端口）或让线上认不出人（单端口），空密码等于开放账号
 	if user.Port <= 0 || user.Port > 65535 {
 		return errors.New(fmt.Sprintf("uid %v has invalid port %v", user.Uid, user.Port))
 	}
@@ -389,13 +364,15 @@ func (s *SSRManager) addUser(user *model.UserInfo) error {
 	if user2 := s.userTable[user.Uid]; user2 != nil {
 		return errors.New(fmt.Sprintf("user %v already exist", user2.Uid))
 	}
+	identity := user.Port
 	if nodeInfo.Single == 1 {
 		for _, server := range s.Shadowsocksrs {
-			server.AddUser(user.Port, user.Passwd)
+			server.AddUser(identity, user.Passwd)
 		}
 	} else {
 		if s.Shadowsocksrs[user.Port] != nil {
-			return errors.New(fmt.Sprintf("add user port %v is used by %v", user.Port, s.portToUidLocked(user.Port)))
+			// 调用方已持有 userTableLock，直读索引而不是走加锁的 IdentityToUid
+			return errors.New(fmt.Sprintf("add user port %v is used by %v", user.Port, s.identityIndex[user.Port]))
 		}
 		server := s.NewShadowsocksRProxy(
 			user.Port,
@@ -412,6 +389,7 @@ func (s *SSRManager) addUser(user *model.UserInfo) error {
 		}
 	}
 	s.userTable[user.Uid] = user
+	s.identityIndex[identity] = user.Uid
 	// deal with all add users handles
 	for _, handle := range s.addUserHandles {
 		handle(user)
@@ -428,13 +406,13 @@ func (s *SSRManager) EditUser(user *model.UserInfo) error {
 
 func (s *SSRManager) editUserReturn(user *model.UserInfo) (before *model.UserInfo, err error) {
 	nodeInfo := core.GetApp().NodeInfo()
-	// TODO after change user profile it will be simultaneously exist old port and new port
+	// 换端口先摘旧监听再建新监听，两个端口不会同时存在
 	before = s.userTable[user.Uid]
 	if before == nil {
 		return nil, errors.New(fmt.Sprintf("user %v dosen't exist", user.Uid))
 	}
 	if nodeInfo.Single != 1 && user.Port != before.Port && s.Shadowsocksrs[user.Port] != nil {
-		return nil, errors.New(fmt.Sprintf("port %v used by user %v", user.Port, s.portToUidLocked(user.Port)))
+		return nil, errors.New(fmt.Sprintf("port %v used by user %v", user.Port, s.identityIndex[user.Port]))
 	}
 	if _, err := s.delUserReturl(user.Uid); err != nil {
 		return nil, errors.Wrap(err, "edit user del user error")
@@ -455,28 +433,30 @@ func (s *SSRManager) DelUser(uid int) error {
 
 func (s *SSRManager) delUserReturl(uid int) (user *model.UserInfo, err error) {
 	nodeInfo := core.GetApp().NodeInfo()
-	port := s.uidToPortLocked(uid)
+	user = s.userTable[uid]
 
-	if port == 0 {
+	if user == nil {
 		return nil, errors.New(fmt.Sprintf("uid %v is not esixt", uid))
 	}
 
+	identity := user.Port
+
 	if nodeInfo.Single == 1 {
 		for _, server := range s.Shadowsocksrs {
-			server.DelUser(port)
-			logrus.Infof("server %v del %v success", server.Port, port)
+			server.DelUser(identity)
+			logrus.Infof("server %v del %v success", server.Port, identity)
 		}
-		user = s.userTable[uid]
+		delete(s.identityIndex, identity)
 		delete(s.userTable, uid)
 	} else {
-		server := s.Shadowsocksrs[port]
-		user = s.userTable[uid]
+		server := s.Shadowsocksrs[identity]
 
 		if server == nil {
 			logrus.WithFields(logrus.Fields{
-				"port": port,
+				"port": identity,
 			}).Info("port is not exist")
 			// 表里有行但端口上没有进程，是上一次添加失败留下的残行；留着会让禁用和删除都清不干净
+			delete(s.identityIndex, identity)
 			delete(s.userTable, uid)
 
 			return user, nil
@@ -485,12 +465,13 @@ func (s *SSRManager) delUserReturl(uid int) (user *model.UserInfo, err error) {
 		if err := server.Close(); err != nil {
 			return nil, err
 		}
-		delete(s.Shadowsocksrs, port)
+		delete(s.Shadowsocksrs, identity)
+		delete(s.identityIndex, identity)
 		delete(s.userTable, uid)
 	}
 	// deal with all add users handles
 	for _, handle := range s.delUserHanelds {
-		handle(uid)
+		handle(user)
 	}
 	return user, nil
 }

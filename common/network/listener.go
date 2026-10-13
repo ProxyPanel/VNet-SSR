@@ -47,7 +47,7 @@ func (l *Listener) ListenTCP(fn func(request *Request)) error {
 		for {
 
 			con, err := l.TCP.Accept()
-			// TODO: https://liudanking.com/network/go-%E4%B8%AD%E5%A6%82%E4%BD%95%E5%87%86%E7%A1%AE%E5%9C%B0%E5%88%A4%E6%96%AD%E5%92%8C%E8%AF%86%E5%88%AB%E5%90%84%E7%A7%8D%E7%BD%91%E7%BB%9C%E9%94%99%E8%AF%AF/
+			// 三类错误都只结束 accept 循环：未知错误不在这里重试
 			if err != nil {
 				errString := err.Error()
 				switch {

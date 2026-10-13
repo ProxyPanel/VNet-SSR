@@ -57,6 +57,8 @@ func (r *Request) LocalAddr() net.Addr {
 	}
 }
 
+// RemoteAddr 只对 stream 请求有意义：UDP 侧Conn 是 nil（一个 PacketConn 对应多个对端），
+// 包来源要从 ReadFrom 的返回值取。UDP 路径上调用它会 nil 解引用。
 func (r *Request) RemoteAddr() net.Addr {
 	return r.Conn.RemoteAddr()
 }

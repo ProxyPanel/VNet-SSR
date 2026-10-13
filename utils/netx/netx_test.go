@@ -75,10 +75,10 @@ func TestCopyEndSummaryCountsAndClears(t *testing.T) {
 func TestCopyEndSummaryCountsActiveUIDs(t *testing.T) {
 	_ = CopyEndSummary()
 
-	markActivePort(1001)
-	markActivePort(1001) // 同一账号开多条连接只算一个活跃账号
-	markActivePort(1002)
-	markActivePort(0) // 还没认出身份的会话不进集合
+	markActiveIdentity(1001)
+	markActiveIdentity(1001) // 同一账号开多条连接只算一个活跃账号
+	markActiveIdentity(1002)
+	markActiveIdentity(0) // 还没认出身份的会话不进集合
 
 	if got, want := CopyEndSummary(), "active_uids=2"; got != want {
 		t.Errorf("摘要=%q, 期望 %q", got, want)

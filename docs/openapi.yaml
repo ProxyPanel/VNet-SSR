@@ -1,7 +1,9 @@
 openapi: 3.0.3
 info:
   title: VNet-SSR ↔ 面板 WebAPI 契约
-  version: 2.2.0
+  # 这里是契约版本，不是发布号：只在接口本身变动时动它（向后兼容的新增加小版本，破坏互通的加主版本）。
+  # 发布号看 release/version.json 的 latest，那个号决定新装与升级取哪个包。
+  version: 2.3.0
   description: |
     本后端与账号面板之间的双向接口。两个方向各有服务端：
 
@@ -160,7 +162,9 @@ paths:
     get:
       tags: [panel]
       summary: 取审计规则
-      description: 本后端只实现 `reg`/`domain`/`ip` 三类；`protocol` 与 `unknown` 会被忽略。
+      description: |
+        本后端只实现 `reg`/`domain`/`ip` 三类；`protocol` 与 `unknown` 会被忽略。
+        拉取时机：启动、整节点重载、以及面板推送 `POST /v2/rule/reload`（规则变更的唯一增量通道，无周期轮询）。
       operationId: getNodeRule
       parameters:
         - $ref: '#/components/parameters/NodePathId'
@@ -183,6 +187,11 @@ paths:
     post:
       tags: [panel]
       summary: 上报命中审计规则的账号
+      description: |
+        reason 是被命中的判定对象：目标地址本身命中时是它；首包嗅探（HTTP Host / TLS SNI）命中时是嗅出的域名。
+        target/sniff_* 字段带完整现场（去向、嗅出的协议/域名/路径），面板落进 rule_log 独立列。
+        节点侧排队重投（at-least-once，面板不可达时不丢）；面板按 (node,uid,rule,reason) 冷却窗口去重
+        （sysConfig `rule_log_cooldown` 分钟，默认 30），窗口内的重复上报只 ack 不二次落档。
       operationId: reportTrigger
       parameters:
         - $ref: '#/components/parameters/NodePathId'
@@ -319,6 +328,19 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/NodeInfo'
+      responses:
+        '200':
+          $ref: '#/components/responses/PushResult'
+  /v2/rule/reload:
+    post:
+      tags: [node]
+      summary: 重拉审计规则（轻量，不断连接）
+      description: |
+        面板改完规则/分组后按节点推送这一发，是规则的唯一增量通道（节点无周期轮询）。
+        拉取失败时保留旧规则集并回错误，面板队列按 $tries 重试；节点重启本来就会拉全量。
+      operationId: reloadRule
+      security:
+        - secretHeader: []
       responses:
         '200':
           $ref: '#/components/responses/PushResult'
@@ -460,10 +482,10 @@ components:
           enum: [0, 1]
         client_limit:
           type: integer
-          description: 并发客户端上限，仅在 auth_aes128_*/auth_chain_a 下生效；0 时本后端用默认 64
+          description: 并发客户端上限，仅在带连接跟踪的 auth_sha1_v4/auth_aes128_*/auth_chain_a~f 下生效；0 时本后端用默认 64
         redirect_url:
           type: string
-          description: 本后端不消费（封禁表现是连不上，不是跳转）
+          description: 命中审计规则且流量是 HTTP 语义（目标 80 或首包嗅出 http）时回 302 跳此地址；未配置或非法值时改回 403；其余（含 TLS）只断流
     UserInfo:
       type: object
       required: [uid, port, passwd]
@@ -473,7 +495,9 @@ components:
           description: 面板 user.id，也是本后端的账号主键
         port:
           type: integer
-          description: 非单端口下即该用户的监听端口；流量归属就是按端口→uid 反查
+          description: |
+            线上身份编号（auth 包头那 4 字节），两种模式下都是它：非单端口下即该用户的监听端口，
+            单端口下不参与监听、只当账号编号用；面板建号时保证全局唯一。用于密码表、流量/在线记账与限速
         passwd:
           type: string
         speed_limit:
@@ -558,6 +582,9 @@ components:
                 description: protocol/unknown 本后端忽略
               pattern:
                 type: string
+                description: |
+                  reg 按 Go 正则匹配原始 host；domain 为精确域名（不区分大小写）或
+                  `*.example.com` 后缀（含 example.com 本身）；ip 为精确 IP 或 CIDR 网段（如 10.0.0.0/8）
     Trigger:
       type: object
       required: [uid, rule_id, reason]
@@ -568,3 +595,17 @@ components:
           type: integer
         reason:
           type: string
+          description: 被命中的判定对象（目标地址或嗅出的域名）
+        target:
+          type: string
+          description: 连接真实去向 host:port
+        sniff_protocol:
+          type: string
+          enum: [http, tls]
+          description: 首包嗅探结果，未嗅到则省略
+        sniff_host:
+          type: string
+          description: HTTP Host 头或 TLS SNI
+        sniff_uri:
+          type: string
+          description: HTTP 请求路径（含 query），tls 无

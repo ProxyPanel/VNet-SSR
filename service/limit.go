@@ -19,17 +19,19 @@ func GetLimitInstance() *Limit {
 
 func init() {
 	GetSSRManager().RegisterAddUserHandle(func(userInfo *model.UserInfo) {
+		identity := userInfo.Port
 		// prefer use node limit when node limit less then user limit
 		if core.GetApp().NodeInfo().SpeedLimit == 0 ||
 			(core.GetApp().NodeInfo().SpeedLimit > userInfo.Limit && userInfo.Limit != 0) {
-			limitInstance.Set(userInfo.Port, int(userInfo.Limit))
+			limitInstance.Set(identity, int(userInfo.Limit))
 		} else {
-			limitInstance.Set(userInfo.Port, int(core.GetApp().NodeInfo().SpeedLimit))
+			limitInstance.Set(identity, int(core.GetApp().NodeInfo().SpeedLimit))
 		}
 	})
 
-	GetSSRManager().RegisterDelUserHandle(func(uid int) {
-		limitInstance.Del(uid)
+	GetSSRManager().RegisterDelUserHandle(func(userInfo *model.UserInfo) {
+		// 与 Set 同一个键：会话侧 UpLimit/DownLimit 也是按身份编号取的限速器
+		limitInstance.Del(userInfo.Port)
 	})
 }
 
@@ -47,44 +49,46 @@ func NewLimit() *Limit {
 	}
 }
 
-func (l *Limit) Set(uid int, limition int) {
+// Set/Del 的键是线上身份编号（两种模式下都是端口），与会话侧 UpLimit/DownLimit 传的同一个值
+func (l *Limit) Set(identity int, limit int) {
 	l.gLocker.Lock()
 	defer l.gLocker.Unlock()
 
-	if limition != 0 {
-		logrus.Infof("limit add %v:%v", uid, limition)
-		l.upLimits[uid] = rate.NewLimiter(rate.Limit(limition), int(limition))
-		l.downLimits[uid] = rate.NewLimiter(rate.Limit(limition), int(limition))
+	if limit != 0 {
+		logrus.Infof("limit add %v:%v", identity, limit)
+		l.upLimits[identity] = rate.NewLimiter(rate.Limit(limit), limit)
+		l.downLimits[identity] = rate.NewLimiter(rate.Limit(limit), limit)
 	} else {
-		logrus.Infof("limit ignore zero limit uid: %v", uid)
+		logrus.Infof("limit ignore zero limit identity: %v", identity)
 	}
 
 }
 
-func (l *Limit) Del(uid int) {
+func (l *Limit) Del(identity int) {
 	l.gLocker.Lock()
 	defer l.gLocker.Unlock()
-	logrus.Infof("limit remove %v", uid)
-	delete(l.upLimits, uid)
+	logrus.Infof("limit remove %v", identity)
+	delete(l.upLimits, identity)
+	delete(l.downLimits, identity)
 }
 
-func (l *Limit) UpLimit(uid, n int) error {
-	if l.upLimits[uid] != nil {
-		return l.upLimits[uid].WaitN(context.Background(), n)
+func (l *Limit) UpLimit(identity, n int) error {
+	if l.upLimits[identity] != nil {
+		return l.upLimits[identity].WaitN(context.Background(), n)
 	}
 	return nil
 }
 
-func (l *Limit) DownLimit(uid, n int) error {
-	if l.downLimits[uid] != nil {
-		return l.downLimits[uid].WaitN(context.Background(), n)
+func (l *Limit) DownLimit(identity, n int) error {
+	if l.downLimits[identity] != nil {
+		return l.downLimits[identity].WaitN(context.Background(), n)
 	}
 	return nil
 }
 
-func (l *Limit) Wait(uid, n int) error {
-	if l.upLimits[uid] != nil {
-		return l.upLimits[uid].WaitN(context.Background(), n)
+func (l *Limit) Wait(identity, n int) error {
+	if l.upLimits[identity] != nil {
+		return l.upLimits[identity].WaitN(context.Background(), n)
 	}
 	return nil
 }

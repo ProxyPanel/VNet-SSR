@@ -6,12 +6,13 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/model"
 )
 
-// TrafficReport 的实现按端口反查账号，而两种模式下装饰器传进来的都是端口：
-// 多端口在 NewShadowsocksRDecorate 里 UID=port，单端口在 auth 包的 4 字节字段里带的也是端口
-// （obfs 用 GetUsers()[uidPack] 查密码表，键就是端口）。所以记账必须按端口成立。
-func TestUploadAttributesByPort(t *testing.T) {
+// TrafficReport 的实现按线上身份编号反查账号，编号两种模式下都是端口：
+// 多端口下会话身份就是监听端口，单端口下 auth 包头 4 字节装的也是端口（面板建号时保证全局唯一）。
+func TestUploadAttributesByPortIdentity(t *testing.T) {
 	s := NewShadowsocksrService()
-	s.userTable[7] = &model.UserInfo{Uid: 7, Port: 30007, Passwd: "p", Enable: 1}
+	user := &model.UserInfo{Uid: 7, Port: 30007, Passwd: "p", Enable: 1}
+	s.userTable[7] = user
+	s.identityIndex[user.Port] = 7
 
 	s.Upload(30007, 100)
 	s.Download(30007, 200)
@@ -25,10 +26,12 @@ func TestUploadAttributesByPort(t *testing.T) {
 	}
 }
 
-// 把面板 uid 当端口传进来时字节会落到 uid 0，而 uid<=0 的增量不上报 —— 接口形参叫 uid 正是这种误用的来源
+// 把面板 uid 当身份编号传进来时字节会落到 uid 0，而 uid<=0 的增量不上报——接口形参不要写成 uid
 func TestUploadWithUIDInsteadOfPortIsDropped(t *testing.T) {
 	s := NewShadowsocksrService()
-	s.userTable[7] = &model.UserInfo{Uid: 7, Port: 30007, Passwd: "p", Enable: 1}
+	user := &model.UserInfo{Uid: 7, Port: 30007, Passwd: "p", Enable: 1}
+	s.userTable[7] = user
+	s.identityIndex[user.Port] = 7
 
 	s.Upload(7, 100)
 

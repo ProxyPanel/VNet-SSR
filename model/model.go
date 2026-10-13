@@ -15,6 +15,7 @@ type NodeInfo struct {
 	SpeedLimit    uint64 `json:"speed_limit"`
 	IsUDP         int    `json:"is_udp"`
 	ClientLimit   int    `json:"client_limit"`
+	RedirectUrl   string `json:"redirect_url"`
 }
 
 type UserInfo struct {
@@ -60,8 +61,14 @@ type RuleItem struct {
 	Pattern string `json:"pattern"`
 }
 
+// Trigger 是一次审计命中的完整现场：reason 为被命中的判定对象，
+// target 是连接真实去向，sniff_* 是首包嗅出的身份（HTTP Host/URL 或 TLS SNI），未嗅到则为空
 type Trigger struct {
-	Uid    int    `json:"uid"`
-	RuleId int    `json:"rule_id"`
-	Reason string `json:"reason"`
+	Uid           int    `json:"uid"`
+	RuleId        int    `json:"rule_id"`
+	Reason        string `json:"reason"`
+	Target        string `json:"target,omitempty"`
+	SniffProtocol string `json:"sniff_protocol,omitempty"`
+	SniffHost     string `json:"sniff_host,omitempty"`
+	SniffUri      string `json:"sniff_uri,omitempty"`
 }
