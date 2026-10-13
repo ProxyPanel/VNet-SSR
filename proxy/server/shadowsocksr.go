@@ -89,6 +89,9 @@ func (ssr *ShadowsocksRProxy) StartTCP() error {
 				"requestId": request.RequestID,
 				"error":     err,
 			}).Error("shadowsocksr NewShadowsocksRDecorate error")
+			// 装饰器建不起来就等于这条连接没法转发：必须关掉 socket，
+			// 否则客户端要等到自己的超时，且每拒一条连接漏一个 fd
+			_ = request.Close()
 			return
 		}
 		ssrd.TrafficReport = ssr.TrafficReport
@@ -176,13 +179,16 @@ func (ssr *ShadowsocksRProxy) StartUDP() error {
 				false,
 				ssr.Single,
 				ssr.Users)
-			ssrd.TrafficReport = ssr.TrafficReport
 			if err != nil {
 				logrus.WithFields(logrus.Fields{
 					"requestId": request.RequestID,
 					"error":     err,
 				}).Error("shadowsocksr NewShadowsocksRDecorate error")
+				// 装饰器建不起来时 ssrd 是 nil：必须在这里退出，否则下一行就是 nil 解引用，
+				// recover 只留一行日志，端口绑着却永远不干活
+				return
 			}
+			ssrd.TrafficReport = ssr.TrafficReport
 			// 参数单位是秒（MapTimeCopy 里乘 time.Second）：同一客户端会话空闲 30 秒即拆表
 			udpMap := NewShadowsocksRUDPMap(30)
 			for {
