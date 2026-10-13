@@ -1,5 +1,5 @@
 #!/bin/bash
-# 按部署脚本 release/deplody.sh 的取包契约打包给 GitHub Release：
+# 按部署脚本 release/deploy.sh 的取包契约打包给 GitHub Release：
 #   资产名 vnet-linux-<VDIS>.zip；解压后目录 vnet-<VERSION>-linux-<VDIS>/；
 #   目录里必须有 vnet、config.json、systemd/vnet.service（脚本按这三项 copyFile/installInitScript）。
 # 用法: bash release/package.sh v2.2.0      （VERSION 必须与 tag 名一致，脚本按 tag 拼下载URL）
