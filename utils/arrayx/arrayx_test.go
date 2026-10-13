@@ -14,7 +14,6 @@ func TestFindStringInArray(t *testing.T) {
 		args args
 		want bool
 	}{
-		// TODO: Add test cases.
 		{
 			name: "test",
 			args: args{

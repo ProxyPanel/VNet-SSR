@@ -33,7 +33,6 @@ func TestIntIn(t *testing.T) {
 		args args
 		want bool
 	}{
-		// TODO: Add test cases.
 		{
 			name:"test1",
 			args:args{

@@ -14,7 +14,6 @@ func Test_isDigits(t *testing.T) {
 		args args
 		want bool
 	}{
-		// TODO: Add test cases.
 		{
 			"test",
 			args{
