@@ -55,11 +55,11 @@ func NewAuthSha1V4(method string) (Plain, error) {
 
 func (a *AuthSha1V4) SetServerInfo(s ServerInfo) {
 	a.AuthBase.SetServerInfo(s)
-	maxClient := 64
+	// v4 代没有「#」后缀：protocol_param 整个就是并发客户端上限。
+	// 取不到整数时保留已设的值，不在每条连接上重置
 	if v, err := strconv.Atoi(s.GetProtocolParam()); err == nil {
-		maxClient = v
+		core.GetApp().GetObfsProtocolService().SetMaxClient(v)
 	}
-	core.GetApp().GetObfsProtocolService().SetMaxClient(maxClient)
 }
 
 // rndData 返回「补长标记 + 随机字节」：1 是单字节标记（后随 0~127 字节），
@@ -232,7 +232,7 @@ func (a *AuthSha1V4) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 			result, sendback = a.NotMatchReturn(a.RecvBuf)
 			return result, sendback, nil
 		}
-		if !core.GetApp().GetObfsProtocolService().Insert(nil, clientID, connectionID) {
+		if !core.GetApp().GetObfsProtocolService().Insert(a.SessionKey(), clientID, connectionID) {
 			result, sendback = a.NotMatchReturn(a.RecvBuf)
 			return result, sendback, nil
 		}
@@ -274,14 +274,14 @@ func (a *AuthSha1V4) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 	}
 
 	if len(result) > 0 {
-		core.GetApp().GetObfsProtocolService().Update(nil, a.ClientID, a.ConnectionID)
+		core.GetApp().GetObfsProtocolService().Update(a.SessionKey(), a.ClientID, a.ConnectionID)
 		a.PacketCount++
 	}
 	return result, sendback, nil
 }
 
 func (a *AuthSha1V4) Dispose() {
-	core.GetApp().GetObfsProtocolService().Remove("", a.ClientID)
+	core.GetApp().GetObfsProtocolService().Remove(string(a.SessionKey()), a.ClientID)
 }
 
 func beUint16(v uint16) []byte {

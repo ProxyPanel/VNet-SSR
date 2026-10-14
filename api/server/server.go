@@ -65,6 +65,21 @@ func loadSecret() string {
 // ErrEmptySecret 面板没给 secret 时的判据：空 secret 会让「不带 header」的请求恒等于服务端期望值
 var ErrEmptySecret = errors.New("node secret is empty, refusing to accept push requests")
 
+// ValidateNodeInfo 是节点配置落地的判据，启动拉取与面板推送两条路都过它。
+// 单端口只有一个监听端口，账号全靠鉴权包头那 4 字节区分：配上不携带身份的协议
+// （origin/plain/http_*/tls_*/auth_sha1_v4）时节点认不出谁在连，流量、在线与限速会全部落空，
+// 所以直接拒绝落地，而不是带着一个不可能归属成功的配置跑下去
+func ValidateNodeInfo(nodeInfo *model.NodeInfo) error {
+	if nodeInfo.Secret == "" {
+		return ErrEmptySecret
+	}
+	if nodeInfo.Single == 1 && !obfs.CarriesIdentity(nodeInfo.Protocol) {
+		return errors.Errorf("single port mode needs a protocol that carries the account identity, %q carries none; usable: %s",
+			nodeInfo.Protocol, strings.Join(obfs.IdentityBearingNames(), ", "))
+	}
+	return nil
+}
+
 func secretCheck() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		expected := loadSecret()
@@ -242,9 +257,9 @@ func NodeReload(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	// 带着空 secret 落配置，重启后 push 服务就不再起来（StartServer 拒绝监听），节点会失联
-	if nodeInfo.Secret == "" {
-		fail(c, ErrEmptySecret)
+	// 带着空 secret 或不携带账号身份的协议落配置，节点会失联或全部流量无法归属
+	if err := ValidateNodeInfo(&nodeInfo); err != nil {
+		fail(c, err)
 		return
 	}
 	// 先把新集合取到手再改配置：面板此刻不可达时保持原样，不把已经在跑的服务打空

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/hex"
-	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/ProxyPanel/VNet-SSR/utils/langx"
 	"math"
@@ -35,6 +34,7 @@ func init() {
 	registerMethod("auth_chain_d", NewAuthChainD)
 	registerMethod("auth_chain_e", NewAuthChainE)
 	registerMethod("auth_chain_f", NewAuthChainF)
+	registerIdentityBearing("auth_chain_a", "auth_chain_b", "auth_chain_c", "auth_chain_d", "auth_chain_e", "auth_chain_f")
 }
 
 const (
@@ -100,7 +100,6 @@ type AuthChainA struct {
 	Salt           []byte
 	PackID         uint32
 	RecvID         uint32
-	UserID         []byte
 	UserIDNum      int
 	UserKey        []byte
 	ClientOverhead int
@@ -173,24 +172,23 @@ func newAuthChain(method string, mode int) (Plain, error) {
 	}, nil
 }
 
+// SetServerInfo 里 protocol_param 形如 max_client[#轮换秒数]：前段是并发客户端上限，六代都吃；
+// 取不到整数时保留已设的值，不在每条连接上重置。后段只有 f 代用（包长表的时间桶秒数）
 func (a *AuthChainA) SetServerInfo(s ServerInfo) {
 	a.AuthBase.SetServerInfo(s)
+	items := strings.SplitN(s.GetProtocolParam(), "#", 2)
+	if v, err := strconv.Atoi(items[0]); err == nil {
+		core.GetApp().GetObfsProtocolService().SetMaxClient(v)
+	}
 	if a.Mode == chainModeA {
 		return
 	}
-	// protocol_param 形如 max_client[#轮换秒数]
-	maxClient := 64
 	interval := int64(60 * 60 * 24)
-	items := strings.SplitN(s.GetProtocolParam(), "#", 2)
-	if v, err := strconv.Atoi(items[0]); err == nil {
-		maxClient = v
-	}
 	if a.Mode == chainModeF && len(items) > 1 {
 		if v, err := strconv.ParseInt(items[1], 10, 64); err == nil && v > 0 {
 			interval = v
 		}
 	}
-	core.GetApp().GetObfsProtocolService().SetMaxClient(maxClient)
 	a.KeyChangeInterva = interval
 	if a.Mode == chainModeF {
 		// 建连时两端各自按「当前时间桶」建表；服务端收到 auth 头后再按包头里的 utc_time 重算，
@@ -432,20 +430,30 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 		}
 
 		a.LastClientHash = md5Data
-		var uid int
-		var uidPack []byte
 
-		// 与 auth_aes128 同一约定：解出的这 4 字节线格式叫 uid，本面板装的是用户端口，
-		// 所以拿它去查以身份编号打包为键的密码表，再经 UpdateUser 写回会话身份
-		uid = int(binaryx.LEBytesToUInt32(a.RecvBuf[12:16]) ^ binaryx.LEBytesToUInt32(md5Data[8:12]))
+		// 与 auth_aes128 同一约定：解出的这 4 字节线格式叫 uid，本后端约定它装的是账号的端口号，
+		// 所以拿它去查以身份编号打包为键的密码表，再经 UpdateUser 写回会话身份。
+		// 空密码不算账号：写入侧就拒绝空密码（等于开放账号），表里出现它只能是手改配置
+		uid := int(binaryx.LEBytesToUInt32(a.RecvBuf[12:16]) ^ binaryx.LEBytesToUInt32(md5Data[8:12]))
+		uidPack := binaryx.LEUint32ToBytes(uint32(uid))
 		a.UserIDNum = uid
-		uidPack = binaryx.LEUint32ToBytes(uint32(uid))
-		if a.GetServerInfo().GetUsers()[string(uidPack)] != "" {
+		if passwd := a.GetServerInfo().GetUsers()[string(uidPack)]; passwd != "" {
 			a.UserID = uidPack
-			a.UserKey = []byte(a.GetServerInfo().GetUsers()[string(uidPack)])
+			a.UserKey = []byte(passwd)
 			a.GetServerInfo().UpdateUser(uidPack)
 		} else {
-			return []byte{}, false, errors.New(fmt.Sprintf("user %v not exist", uid))
+			// 认不出这个身份就不拿它当账号编号，这条连接的流量退回按监听端口记账
+			a.UserIDNum = 0
+			if len(a.GetServerInfo().GetUsers()) == 0 {
+				// 多端口：每个监听端口自己就是一个账号，密码表恒空，
+				// 两端都按本端口密钥算会话 key，包里的身份编号随包随机
+				a.UserKey = a.GetServerInfo().GetKey()
+			} else {
+				// 单端口且不认识：表上没有这个账号，就没有任何 key 能验证这条流，
+				// 按握手不匹配收尾，不必再解一轮必然失配的包头
+				result, sendback = a.NotMatchReturn(a.RecvBuf)
+				return
+			}
 		}
 
 		md5Data = hmacmd5(a.UserKey, a.RecvBuf[12:12+20])
@@ -489,7 +497,7 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 				hex.EncodeToString(head))
 			result, sendback = a.NotMatchReturn(a.RecvBuf)
 			return result, sendback, nil
-		} else if core.GetApp().GetObfsProtocolService().Insert(a.UserID, int(clientId), int(connectionId)) {
+		} else if core.GetApp().GetObfsProtocolService().Insert(a.SessionKey(), int(clientId), int(connectionId)) {
 			a.HasRecvHeader = true
 			a.ClientID = int(clientId)
 			a.ConnectionID = connectionId
@@ -561,7 +569,7 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 	}
 
 	if len(result) > 0 {
-		core.GetApp().GetObfsProtocolService().Update(a.UserID, a.ClientID, int(a.ConnectionID))
+		core.GetApp().GetObfsProtocolService().Update(a.SessionKey(), a.ClientID, int(a.ConnectionID))
 	}
 	return result, sendback, nil
 }
@@ -615,7 +623,8 @@ func (a *AuthChainA) ClientUDPPostDecrypt(buf []byte) ([]byte, error) {
 	if len(buf) < 8 {
 		return []byte{}, nil
 	}
-	if bytes.Equal(hmacmd5(a.UserKey, buf[:len(buf)])[:1], buf[len(buf)-1:]) {
+	// 校验位盖在它之前的全部字节上，不匹配即丢弃
+	if !bytes.Equal(hmacmd5(a.UserKey, buf[:len(buf)-1])[:1], buf[len(buf)-1:]) {
 		return []byte{}, nil
 	}
 	macKey := a.GetServerInfo().GetKey()
@@ -634,15 +643,14 @@ func (a *AuthChainA) ClientUDPPostDecrypt(buf []byte) ([]byte, error) {
 
 func (a *AuthChainA) ServerUDPPreEncrypt(buf, uid []byte) ([]byte, error) {
 	var userKey []byte
-	if a.GetServerInfo().GetUsers()[string(uid)] != "" {
-		userKey = []byte(a.GetServerInfo().GetUsers()[string(uid)])
+	if passwd := a.GetServerInfo().GetUsers()[string(uid)]; passwd != "" {
+		userKey = []byte(passwd)
+	} else if len(a.GetServerInfo().GetUsers()) == 0 {
+		// 多端口：本端口自己就是账号，回包按本端口密钥封
+		userKey = a.GetServerInfo().GetKey()
 	} else {
-		uid = nil
-		if len(a.GetServerInfo().GetUsers()) == 0 {
-			userKey = a.GetServerInfo().GetKey()
-		} else {
-			userKey = a.GetServerInfo().GetRecvIv()
-		}
+		// 表上没有这个账号：换个 key 封出去只会让客户端解出垃圾，交回调用方丢弃
+		return nil, errors.New("auth_chain udp response to unknown identity")
 	}
 	authData := randomx.RandomBytes(7)
 	macKey := a.GetServerInfo().GetKey()
@@ -671,17 +679,21 @@ func (a *AuthChainA) ServerUDPPostDecrypt(buf []byte) ([]byte, string, error) {
 	uid := binaryx.LEBytesToUInt32(buf[len(buf)-5:len(buf)-1]) ^ binaryx.LEBytesToUInt32(md5Data[:4])
 	uidPack := binaryx.LEUint32ToBytes(uid)
 	var userKey []byte
-	if a.GetServerInfo().GetUsers()[string(uidPack)] != "" {
-		userKey = []byte(a.GetServerInfo().GetUsers()[string(uidPack)])
+	if passwd := a.GetServerInfo().GetUsers()[string(uidPack)]; passwd != "" {
+		userKey = []byte(passwd)
 	} else {
-		userKey = nil
+		// 认不出这个身份就不能把它当账号带出去：调用方按返回的 uid 记账与回包
+		uidPack = nil
 		if len(a.GetServerInfo().GetUsers()) == 0 {
+			// 多端口：本端口自己就是账号，两端都按本端口密钥封包
 			userKey = a.GetServerInfo().GetKey()
 		} else {
-			userKey = a.GetServerInfo().GetRecvIv()
+			// 表上没有这个账号，就没有任何 key 能验证这个包，整包丢弃
+			return []byte{}, "", nil
 		}
 	}
-	if bytes.Equal(hmacmd5(userKey, buf[:len(buf)])[:1], buf[len(buf)-1:]) {
+	// 校验位盖在它之前的全部字节上，不匹配即丢弃
+	if !bytes.Equal(hmacmd5(userKey, buf[:len(buf)-1])[:1], buf[len(buf)-1:]) {
 		return []byte{}, "", nil
 	}
 	randLen := a.udpRndDataLen(md5Data, a.RandomServer)
@@ -704,7 +716,7 @@ func (a *AuthChainA) ServerUDPPostDecrypt(buf []byte) ([]byte, string, error) {
 }
 
 func (a *AuthChainA) Dispose() {
-	core.GetApp().GetObfsProtocolService().Remove(string(a.UserID), a.ClientID)
+	core.GetApp().GetObfsProtocolService().Remove(string(a.SessionKey()), a.ClientID)
 }
 
 func (a *AuthChainA) trapezoidRandomFloat(d float64) float64 {

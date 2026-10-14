@@ -73,10 +73,23 @@ func matchBegin(str1, str2 []byte) bool {
 /* ---------------------------- AuthBase ---------------------------- */
 type AuthBase struct {
 	Plain
+	// UserID 是本会话从 auth 包里解出的账号身份；解不出的代际（auth_sha1_v4）与
+	// 多端口模式留空，连接计数改取 ServerInfo.Identity
+	UserID             []byte
 	Method             string
 	NoCompatibleMethod string
 	Overhead           int
 	RawTrans           bool
+}
+
+// SessionKey 返回这条会话该归到哪个连接计数桶：auth 包解得出身份就用它（单端口），
+// 解不出来时用建连时下发的账号身份（多端口下即监听端口）。
+// 两者都没有时不能退回空键——那会把整机所有端口挤进同一个桶，client_limit 变成全节点共享
+func (authBase *AuthBase) SessionKey() []byte {
+	if len(authBase.UserID) > 0 {
+		return authBase.UserID
+	}
+	return authBase.GetServerInfo().GetIdentity()
 }
 
 func NewAuthBase(method string) (*AuthBase, error) {
@@ -192,8 +205,10 @@ func (c *ClientQueue) Insert(connectionID int) bool {
 /* ---------------------------- ObfsAuthChainData ---------------------------- */
 
 type ObfsAuthChainData struct {
-	Name          string
-	UserID        map[string]*cache.LRU
+	Name string
+	// Buckets 按账号身份（4 字节小端的字符串形式）各挂一个连接 id 计数桶，
+	// MaxClient 是每桶上限，不是全节点上限
+	Buckets       map[string]*cache.LRU
 	LocalClientId []byte
 	ConnectionID  uint32
 	MaxClient     int
@@ -203,7 +218,7 @@ type ObfsAuthChainData struct {
 func NewObfsAuthChainData(name string) *ObfsAuthChainData {
 	result := &ObfsAuthChainData{
 		Name:          name,
-		UserID:        make(map[string]*cache.LRU),
+		Buckets:       make(map[string]*cache.LRU),
 		LocalClientId: []byte{},
 		ConnectionID:  0,
 	}
@@ -212,10 +227,10 @@ func NewObfsAuthChainData(name string) *ObfsAuthChainData {
 }
 
 func (o *ObfsAuthChainData) Update(userID []byte, clientID, connectionID int) {
-	if o.UserID[string(userID)] == nil {
-		o.UserID[string(userID)] = cache.NewLruCache(60 * time.Second)
+	if o.Buckets[string(userID)] == nil {
+		o.Buckets[string(userID)] = cache.NewLruCache(60 * time.Second)
 	}
-	localClientID := o.UserID[string(userID)]
+	localClientID := o.Buckets[string(userID)]
 	var r *ClientQueue = nil
 	if localClientID != nil {
 		r, _ = localClientID.Get(clientID).(*ClientQueue)
@@ -231,10 +246,10 @@ func (o *ObfsAuthChainData) SetMaxClient(maxClient int) {
 }
 
 func (o *ObfsAuthChainData) Insert(userID []byte, clientID, connectionID int) bool {
-	if o.UserID[string(userID)] == nil {
-		o.UserID[string(userID)] = cache.NewLruCache(60 * time.Second)
+	if o.Buckets[string(userID)] == nil {
+		o.Buckets[string(userID)] = cache.NewLruCache(60 * time.Second)
 	}
-	localClientID := o.UserID[string(userID)]
+	localClientID := o.Buckets[string(userID)]
 	var r, _ = localClientID.Get(clientID).(*ClientQueue)
 	if r == nil || !r.Enable {
 		if localClientID.First() == nil || localClientID.Len() < o.MaxClient {
@@ -266,7 +281,7 @@ func (o *ObfsAuthChainData) Insert(userID []byte, clientID, connectionID int) bo
 }
 
 func (o *ObfsAuthChainData) Remove(userID string, clientID int) {
-	localClientID := o.UserID[string(userID)]
+	localClientID := o.Buckets[string(userID)]
 	if localClientID != nil {
 		if localClientID.IsExist(clientID) {
 			localClientID.Get(clientID).(*ClientQueue).DelRef()

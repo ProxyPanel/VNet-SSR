@@ -33,10 +33,10 @@ func main() {
 			logrus.Fatal(err)
 		}
 		core.GetApp().SetNodeInfo(nodeInfo)
-		// 空 secret 的节点等于把 push 端口开放给任何能连上它的人（可改用户表、重载配置），
-		// 这里直接退出，不带着无凭据的配置继续跑
-		if nodeInfo.Secret == "" {
-			logrus.Fatal(server.ErrEmptySecret)
+		// 空 secret 的节点等于把 push 端口开放给任何能连上它的人（可改用户表、重载配置）；
+		// 单端口配上不携带账号身份的协议则无法归属任何流量。都不带着这种配置继续跑
+		if err := server.ValidateNodeInfo(nodeInfo); err != nil {
+			logrus.Fatal(err)
 		}
 		logrus.WithFields(logrus.Fields{
 			"id":          nodeInfo.ID,

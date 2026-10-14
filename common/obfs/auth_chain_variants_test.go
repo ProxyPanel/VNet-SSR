@@ -12,27 +12,80 @@ func newChainPair(t *testing.T, method string) (Plain, Plain) {
 	t.Helper()
 	core.GetApp().SetObfsProtocolService(NewObfsAuthChainData(method))
 
-	newSide := func() Plain {
-		p, err := GetObfs(method)
-		if err != nil {
-			t.Fatalf("%s 未注册: %v", method, err)
-		}
-		s := NewServerInfo()
-		s.GetUsers()[string(binaryx.LEUint32ToBytes(1024))] = "killer"
-		s.SetPort(8080)
-		s.SetProtocolParam("1024:killer")
-		s.SetIv(MustHexDecode("271d7f17d03ed7cd1f44327456aebfa2"))
-		s.SetRecvIv(MustHexDecode("271d7f17d03ed7cd1f44327456aebfa2"))
-		s.SetKeyStr("killer")
-		s.SetKey(MustHexDecode("b36d331451a61eb2d76860e00c347396"))
-		s.SetHeadLen(30)
-		s.SetTCPMss(1460)
-		s.SetBufferSize(32*1024 - 5 - 4)
-		s.SetOverhead(9)
-		p.SetServerInfo(s)
-		return p
+	users := map[string]string{string(binaryx.LEUint32ToBytes(1024)): "killer"}
+	return newChainSide(t, method, users, "1024:killer"), newChainSide(t, method, users, "1024:killer")
+}
+
+// users 与 param 决定这一端怎么认账号：单端口靠表里的身份编号配 uid:passwd，
+// 多端口表恒空、param 不带冒号
+func newChainSide(t *testing.T, method string, users map[string]string, param string) Plain {
+	t.Helper()
+	p, err := GetObfs(method)
+	if err != nil {
+		t.Fatalf("%s 未注册: %v", method, err)
 	}
-	return newSide(), newSide()
+	s := NewServerInfo()
+	for uidPack, passwd := range users {
+		s.GetUsers()[uidPack] = passwd
+	}
+	s.SetPort(8080)
+	s.SetProtocolParam(param)
+	s.SetIv(MustHexDecode("271d7f17d03ed7cd1f44327456aebfa2"))
+	s.SetRecvIv(MustHexDecode("271d7f17d03ed7cd1f44327456aebfa2"))
+	s.SetKeyStr("killer")
+	s.SetKey(MustHexDecode("b36d331451a61eb2d76860e00c347396"))
+	s.SetHeadLen(30)
+	s.SetTCPMss(1460)
+	s.SetBufferSize(32*1024 - 5 - 4)
+	s.SetOverhead(9)
+	p.SetServerInfo(s)
+	return p
+}
+
+// 多端口节点：密码表恒空，两端都按本端口密钥算会话 key，包里的身份编号随包随机。
+// 这条通路必须能完成握手，否则多端口节点上 auth_* 协议一条 TCP 也建不起来
+func TestAuthChainMultiPortEmptyTableRoundTrip(t *testing.T) {
+	for _, method := range []string{"auth_chain_a", "auth_chain_b", "auth_chain_f"} {
+		core.GetApp().SetObfsProtocolService(NewObfsAuthChainData(method))
+		empty := map[string]string{}
+		client := newChainSide(t, method, empty, "64")
+		server := newChainSide(t, method, empty, "64")
+		payload := bytes.Repeat([]byte("m"), 300)
+
+		encoded, err := client.ClientPreEncrypt(payload)
+		if err != nil {
+			t.Fatalf("%s 客户端封装失败: %v", method, err)
+		}
+		decoded, _, err := server.ServerPostDecrypt(encoded)
+		if err != nil {
+			t.Fatalf("%s 多端口空表下服务端解包失败: %v", method, err)
+		}
+		if !bytes.Equal(decoded, payload) {
+			t.Fatalf("%s 多端口回环不符：payload %d 字节，解出 %d 字节", method, len(payload), len(decoded))
+		}
+	}
+}
+
+// 单端口下不认识的线上身份：没有 key 能验证这条流，按握手不匹配收尾，
+// 不抛错也不把明文放出去
+func TestAuthChainUnknownIdentityFailsQuietly(t *testing.T) {
+	core.GetApp().SetObfsProtocolService(NewObfsAuthChainData("auth_chain_a"))
+	known := map[string]string{string(binaryx.LEUint32ToBytes(1024)): "killer"}
+	client := newChainSide(t, "auth_chain_a", known, "9999:killer")
+	server := newChainSide(t, "auth_chain_a", known, "1024:killer")
+
+	payload := bytes.Repeat([]byte("m"), 60)
+	encoded, err := client.ClientPreEncrypt(payload)
+	if err != nil {
+		t.Fatalf("客户端封装失败: %v", err)
+	}
+	decoded, _, err := server.ServerPostDecrypt(encoded)
+	if err != nil {
+		t.Fatalf("不认识的身份不该抛错: %v", err)
+	}
+	if bytes.Contains(decoded, payload) {
+		t.Fatal("不认识的身份解出了明文，密码表判据没起作用")
+	}
 }
 
 // 五个变体的差异全在包长补全表；回环必须逐字节还原，否则说明两端算出的表不一致

@@ -464,7 +464,13 @@ components:
           type: string
         protocol_param:
           type: string
-          description: 服务端数据路径不消费它；面板可能不下发该键
+          description: |
+            并发客户端上限，格式按协议代际取：`auth_sha1_v4` 取整个值为整数；
+            `auth_aes128_*` 与 `auth_chain_a~f` 取 `#` 前段为整数。`auth_chain_f` 的 `#` 后段是
+            包长表轮换秒数（缺省一天）；`auth_aes128_*` 的 `#` 后段在 SSR 里是 mu 形态的用户表，
+            本后端不解析它——账号表只有 `user/add` 与 `userList` 这一个来源，两个来源共写一张表
+            会让已摘的号在下一次连接复活。本后端依托下发方提供端口与账号，不提供本地账号配置。
+            取不到整数时不改动上限；此时上限只由 `client_limit` 决定（0 即默认 64）
         push_port:
           type: integer
           description: 面板反向推送的端口
@@ -473,7 +479,10 @@ components:
         single:
           type: integer
           enum: [0, 1]
-          description: 判据是面板 `Node::isSinglePort()`（profile.passwd 非空才算填了）
+          description: 判据是面板 `Node::isSinglePort()`（profile.passwd 非空才算填了）。
+            单端口只有一个监听端口，账号只能靠鉴权包头那 4 字节区分，因此要求 `protocol` 会携带账号身份
+            （`auth_aes128_md5`/`auth_aes128_sha1`/`auth_chain_a~f`）；配上其余协议（含 `auth_sha1_v4`）
+            时节点拒绝落地该配置并回错误，而不是跑起来后流量、在线与限速全部无法归属
         speed_limit:
           type: integer
           description: 字节/秒；0 = 不限速（此时改用用户限速）
@@ -496,8 +505,10 @@ components:
         port:
           type: integer
           description: |
-            线上身份编号（auth 包头那 4 字节），两种模式下都是它：非单端口下即该用户的监听端口，
-            单端口下不参与监听、只当账号编号用；面板建号时保证全局唯一。用于密码表、流量/在线记账与限速
+            该用户的监听端口，也是账号编号；面板建号时保证全局唯一。
+            单端口模式下它同时是 auth 包头那 4 字节的线上身份（密码表按它取账号）；
+            非单端口模式下包头身份不参与——两端按本端口密钥建会话，
+            流量与在线记账按监听端口→uid 反查
         passwd:
           type: string
         speed_limit:

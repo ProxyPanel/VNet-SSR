@@ -64,6 +64,14 @@ func newAuthAes128Pair(t *testing.T, method string) (Plain, Plain) {
 
 func newAuthAes128Side(t *testing.T, method, keyStr string, key []byte) Plain {
 	t.Helper()
+	return newAuthAes128SideWith(t, method, keyStr, key,
+		map[string]string{string(binaryx.LEUint32ToBytes(1024)): keyStr}, "1024:"+keyStr)
+}
+
+// users 与 param 决定这一端怎么认账号：单端口靠表里的身份编号配 uid:passwd，
+// 多端口表恒空、param 不带冒号
+func newAuthAes128SideWith(t *testing.T, method, keyStr string, key []byte, users map[string]string, param string) Plain {
+	t.Helper()
 	core.GetApp().SetObfsProtocolService(NewObfsAuthChainData(method))
 
 	p, err := GetObfs(method)
@@ -72,10 +80,12 @@ func newAuthAes128Side(t *testing.T, method, keyStr string, key []byte) Plain {
 	}
 
 	s := NewServerInfo()
-	s.GetUsers()[string(binaryx.LEUint32ToBytes(1024))] = keyStr
+	for uidPack, passwd := range users {
+		s.GetUsers()[uidPack] = passwd
+	}
 	s.SetClient(net.ParseIP("127.0.0.1"))
 	s.SetPort(8080)
-	s.SetProtocolParam("1024:" + keyStr)
+	s.SetProtocolParam(param)
 	s.SetIv(MustHexDecode("271d7f17d03ed7cd1f44327456aebfa2"))
 	s.SetRecvIv(MustHexDecode("271d7f17d03ed7cd1f44327456aebfa2"))
 	s.SetKeyStr(keyStr)
@@ -87,4 +97,97 @@ func newAuthAes128Side(t *testing.T, method, keyStr string, key []byte) Plain {
 	p.SetServerInfo(s)
 
 	return p
+}
+
+// 多端口节点：每个监听端口自己就是一个账号，密码表恒空，两端都按本端口密钥算会话 key、
+// 包里的身份编号随包随机，TCP 必须能完成握手
+func TestAuthAes128MultiPortEmptyTableRoundTrip(t *testing.T) {
+	for _, method := range []string{"auth_aes128_md5", "auth_aes128_sha1"} {
+		key := MustHexDecode("b36d331451a61eb2d76860e00c347396")
+		client := newAuthAes128SideWith(t, method, "killer", key, map[string]string{}, "64")
+		server := newAuthAes128SideWith(t, method, "killer", key, map[string]string{}, "64")
+		payload := bytes.Repeat([]byte("hello"), 100)
+
+		ciphered, err := client.ClientPreEncrypt(payload)
+		if err != nil {
+			t.Fatalf("%s 客户端封装失败: %v", method, err)
+		}
+		clear, _, err := server.ServerPostDecrypt(ciphered)
+		if err != nil {
+			t.Fatalf("%s 多端口空表下服务端解包失败: %v", method, err)
+		}
+		if !bytes.Equal(clear, payload) {
+			t.Fatalf("%s 多端口回环不符：payload %d 字节，解出 %d 字节", method, len(payload), len(clear))
+		}
+	}
+}
+
+// 单端口下不认识的线上身份（面板已摘号、客户端还拿旧订阅重连）不该当成错误抛出去：
+// 没有 key 能验证这条流，按握手不匹配收尾即可。这里钉住「不抛错」与「不漏明文」
+func TestAuthAes128UnknownIdentityFailsQuietly(t *testing.T) {
+	key := MustHexDecode("b36d331451a61eb2d76860e00c347396")
+	known := map[string]string{string(binaryx.LEUint32ToBytes(1024)): "killer"}
+	client := newAuthAes128SideWith(t, "auth_aes128_md5", "killer", key, known, "9999:killer")
+	server := newAuthAes128SideWith(t, "auth_aes128_md5", "killer", key, known, "1024:killer")
+
+	payload := bytes.Repeat([]byte("hello"), 20)
+	ciphered, err := client.ClientPreEncrypt(payload)
+	if err != nil {
+		t.Fatalf("客户端封装失败: %v", err)
+	}
+	clear, _, err := server.ServerPostDecrypt(ciphered)
+	if err != nil {
+		t.Fatalf("不认识的身份不该抛错: %v", err)
+	}
+	if bytes.Contains(clear, payload) {
+		t.Fatal("不认识的身份解出了明文，密码表判据没起作用")
+	}
+}
+
+// 多端口的 UDP：密码表恒空，两端都按本端口密钥封包。返回的身份归零，上层按监听端口归属
+// （LEBytesToUInt32 对空串取 0，handleStageAddr 的 0 判据会跳过按账号记账）
+func TestAuthAes128UDPMultiPortRoundTrip(t *testing.T) {
+	for _, method := range []string{"auth_aes128_md5", "auth_aes128_sha1"} {
+		key := MustHexDecode("b36d331451a61eb2d76860e00c347396")
+		client := newAuthAes128SideWith(t, method, "killer", key, map[string]string{}, "64")
+		server := newAuthAes128SideWith(t, method, "killer", key, map[string]string{}, "64")
+
+		ciphered, err := client.ClientUDPPreEncrypt([]byte("hello"))
+		if err != nil {
+			t.Fatalf("%s 客户端 UDP 封装失败: %v", method, err)
+		}
+		clear, uid, err := server.ServerUDPPostDecrypt(ciphered)
+		if err != nil {
+			t.Fatalf("%s 多端口空表下服务端 UDP 解包失败: %v", method, err)
+		}
+		if string(clear) != "hello" {
+			t.Fatalf("%s 解出 %q, want %q", method, clear, "hello")
+		}
+		if uid != "" {
+			t.Fatalf("%s 多端口不该带出账号身份: %q", method, uid)
+		}
+	}
+}
+
+// 4 字节校验位盖在它之前的全部字节上：校验位不对就整包丢弃，不能继续解给上层
+func TestAuthAes128UDPBadChecksumDropped(t *testing.T) {
+	key := MustHexDecode("b36d331451a61eb2d76860e00c347396")
+	known := map[string]string{string(binaryx.LEUint32ToBytes(1024)): "killer"}
+	client := newAuthAes128SideWith(t, "auth_aes128_md5", "killer", key, known, "1024:killer")
+	server := newAuthAes128SideWith(t, "auth_aes128_md5", "killer", key, known, "1024:killer")
+
+	ciphered, err := client.ClientUDPPreEncrypt([]byte("hello"))
+	if err != nil {
+		t.Fatalf("客户端 UDP 封装失败: %v", err)
+	}
+	bad := append([]byte{}, ciphered...)
+	bad[len(bad)-1] ^= 0xFF
+
+	clear, uid, err := server.ServerUDPPostDecrypt(bad)
+	if err != nil {
+		t.Fatalf("校验位不对不该抛错: %v", err)
+	}
+	if len(clear) != 0 || uid != "" {
+		t.Fatalf("校验位不对的包被接受了：clear %q uid %q", clear, uid)
+	}
 }

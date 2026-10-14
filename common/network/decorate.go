@@ -55,13 +55,15 @@ func NewShadowsocksRDecorate(request *Request, obfsMethod, cryptMethod, key, pro
 
 	ssrd.Overhead = ssrd.obfs.GetOverhead(isLocal) + ssrd.protocol.GetOverhead(isLocal)
 
+	// 多端口下账号身份就是监听端口，先定下来再建 serverInfo：连接计数桶要按它分
+	if single != 1 {
+		ssrd.Identity = port
+	}
+
 	// set serverinfo
 	ssrd.obfs.SetServerInfo(ssrd.getServerInfo(true))
 	ssrd.protocol.SetServerInfo(ssrd.getServerInfo(false))
 
-	if single != 1 {
-		ssrd.Identity = port
-	}
 	return ssrd, err
 }
 
@@ -369,6 +371,10 @@ func (ssrd *ShadowsocksRDecorate) getServerInfo(isObfs bool) obfs.ServerInfo {
 	serverInfo.SetOverhead(ssrd.Overhead)
 	serverInfo.SetUpdateUserFunc(ssrd.UpdateUser)
 	serverInfo.SetUsers(ssrd.Users)
+	// 单端口下这里还是空的，等 auth 包解出身份后由会话自己带上；多端口下就是本端口
+	if ssrd.Identity != 0 {
+		serverInfo.SetIdentity(binaryx.LEUint32ToBytes(uint32(ssrd.Identity)))
+	}
 	return serverInfo
 }
 

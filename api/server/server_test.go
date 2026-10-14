@@ -122,6 +122,50 @@ func TestNodeReloadRejectsEmptySecret(t *testing.T) {
 	}
 }
 
+// 单端口只有一个监听端口，账号全靠鉴权包头那 4 字节区分：配上不带身份的协议时
+// 节点认不出谁在连，流量、在线与限速全部落空，必须在落地前拒掉
+func TestValidateNodeInfoRejectsSinglePortWithoutIdentity(t *testing.T) {
+	if err := ValidateNodeInfo(&model.NodeInfo{Secret: testPushSecret, Single: 1, Protocol: "auth_chain_a"}); err != nil {
+		t.Fatalf("单端口 + auth_chain_a 不该被拒: %v", err)
+	}
+	// 多端口不受这条判据约束：账号由各自的监听端口区分
+	if err := ValidateNodeInfo(&model.NodeInfo{Secret: testPushSecret, Single: 0, Protocol: "origin"}); err != nil {
+		t.Fatalf("多端口 + origin 不该被拒: %v", err)
+	}
+
+	for _, protocol := range []string{"origin", "plain", "http_simple", "http_post", "tls1.2_ticket_auth", "auth_sha1_v4", ""} {
+		err := ValidateNodeInfo(&model.NodeInfo{Secret: testPushSecret, Single: 1, Protocol: protocol})
+		if err == nil {
+			t.Fatalf("单端口 + %q 被接受了，节点将无法归属任何流量", protocol)
+		}
+	}
+
+	// secret 那条判据不能被这条改动吃掉
+	if err := ValidateNodeInfo(&model.NodeInfo{Single: 1, Protocol: "auth_chain_a"}); err != ErrEmptySecret {
+		t.Fatalf("空 secret 的判据变了: %v", err)
+	}
+}
+
+// 单端口配不带身份的协议时，重载要秒回拒绝并且不改写在跑的配置：
+// 判据排在打面板之前，面板可达与否都不该被这条坏配置波及
+func TestNodeReloadRejectsSinglePortWithoutIdentity(t *testing.T) {
+	core.GetApp().SetNodeInfo(&model.NodeInfo{ID: 7, Port: "8388", Secret: testPushSecret, PushPort: 30108})
+	panel := newPushRouter(t, testPushSecret)
+
+	started := time.Now()
+	_, body := postTo(t, panel.URL+"/api/v2/node/reload", testPushSecret,
+		`{"id":7,"port":"8388","secret":"`+testPushSecret+`","single":1,"protocol":"origin","push_port":30108}`)
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("单端口判据花了 %s，说明它先去打面板了", elapsed)
+	}
+	if gjson.Get(body, "success").String() != "false" {
+		t.Fatalf("单端口 + origin 的重载被接受了: %s", body)
+	}
+	if core.GetApp().NodeInfo().Protocol != "" {
+		t.Fatalf("重载被拒后配置仍被改写: %+v", core.GetApp().NodeInfo())
+	}
+}
+
 // 面板此刻取不到用户表时，重载必须原样保留在跑的服务：
 // 先把新集合取到手才改配置，否则端口会被打空、在线全断
 func TestNodeReloadKeepsRunningConfigWhenPanelUnreachable(t *testing.T) {

@@ -41,6 +41,10 @@ type ServerInfo interface {
 	GetOverhead() int
 	GetUsers() map[string]string
 	SetUsers(users map[string]string)
+	// Identity 是本会话默认归属的账号身份（4 字节小端）：多端口下就是监听端口，
+	// 供连接计数桶取键用；单端口下由 auth 包解出后写回会话，这里留空
+	GetIdentity() []byte
+	SetIdentity(identity []byte)
 	UpdateUser(uid []byte)
 	SetUpdateUserFunc(func(uid []byte))
 }
@@ -61,6 +65,7 @@ type serverInfo struct {
 	BufferSize    int
 	Overhead      int
 	Users         map[string]string
+	Identity      []byte
 	updateUser    func(uid []byte)
 }
 
@@ -191,6 +196,14 @@ func (s *serverInfo) GetUsers() map[string]string {
 
 func (s *serverInfo) SetUsers(users map[string]string) {
 	s.Users = users
+}
+
+func (s *serverInfo) GetIdentity() []byte {
+	return s.Identity
+}
+
+func (s *serverInfo) SetIdentity(identity []byte) {
+	s.Identity = identity
 }
 
 func (s *serverInfo) UpdateUser(uid []byte) {

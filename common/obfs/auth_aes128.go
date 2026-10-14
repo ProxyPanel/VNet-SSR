@@ -28,6 +28,7 @@ import (
 func init() {
 	registerMethod("auth_aes128_md5", AuthAes128Md5Factory)
 	registerMethod("auth_aes128_sha1", AuthAes128Sha1Factory)
+	registerIdentityBearing("auth_aes128_md5", "auth_aes128_sha1")
 }
 
 func AuthAes128Md5Factory(method string) (Plain, error) {
@@ -60,7 +61,6 @@ type AuthAes128Sha1 struct {
 	ExtraWaitSize int
 	PackID        uint32
 	RecvID        uint32
-	UserID        []byte
 	UserKey       []byte
 	LastRndLen    int
 }
@@ -101,8 +101,13 @@ func NewAuthAes128Sha1(method string, handle func() hash.Hash) (Plain, error) {
 	return authAes128Sha1, nil
 }
 
+// SetServerInfo 里 protocol_param 的「#」前段是并发客户端上限（mu 形态下「#」后跟 uid:passwd 用户表，
+// 那张表由账号下发通道负责，这里不解析）。取不到整数时保留已设的值，不在每条连接上重置
 func (a *AuthAes128Sha1) SetServerInfo(s ServerInfo) {
 	a.AuthBase.SetServerInfo(s)
+	if v, err := strconv.Atoi(strings.SplitN(s.GetProtocolParam(), "#", 2)[0]); err == nil {
+		core.GetApp().GetObfsProtocolService().SetMaxClient(v)
+	}
 }
 
 func (a *AuthAes128Sha1) trapezoidRandomFloat(d float64) float64 {
@@ -192,12 +197,12 @@ func (a *AuthAes128Sha1) packAuthData(authData, buf []byte) ([]byte, error) {
 		} else {
 			return nil, errors.New(fmt.Sprintf("obfs param error: %s", param))
 		}
-	} else {
-		return nil, errors.New(fmt.Sprintf("obfs param error: %s", param))
 	}
 
 	if a.UserKey == nil {
-		return nil, errors.New(fmt.Sprintf("obfs param error: %s", param))
+		// protocol_param 不带 uid:passwd 即多端口：身份编号随机、会话 key 用本端口自己的密钥，
+		// 与本文件 ClientUDPPreEncrypt 以及 auth_chain 的同名分支同一条判据
+		a.UserKey = a.GetServerInfo().GetKey()
 	}
 	encryptor, err := ciphers.NewEncryptorWithIv("aes-128-cbc",
 		string(bytesx.ContactSlice([]byte(base64.StdEncoding.EncodeToString(a.UserKey)), a.Salt)),
@@ -338,16 +343,25 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 			return
 		}
 
-		// 报文里这 4 字节按 SSR 线格式叫 uid，但本面板约定它装的是用户端口：
-		// 密码表 GetUsers() 的键由 proxy/server 的 AddUser(identity) 打包，UpdateUser 也把它写回会话身份
+		// 报文里这 4 字节按 SSR 线格式叫 uid，本后端约定它装的是账号的端口号
+		// （契约见 docs/openapi.yaml 的 UserInfo.port）：密码表 GetUsers() 的键由 proxy/server 的
+		// AddUser(identity) 打包，UpdateUser 也把它写回会话身份。
+		// 空密码不算账号：写入侧就拒绝空密码（等于开放账号），表里出现它只能是手改配置，按不认识处理
 		uidPack := a.RecvBuf[7:11]
-		uid := binaryx.LEBytesToUInt32(uidPack)
-		if a.GetServerInfo().GetUsers()[string(uidPack)] != "" {
+		if passwd := a.GetServerInfo().GetUsers()[string(uidPack)]; passwd != "" {
 			a.UserID = uidPack
-			a.UserKey = hashSum([]byte(a.GetServerInfo().GetUsers()[string(uidPack)]), a.HashFunc)
+			a.UserKey = hashSum([]byte(passwd), a.HashFunc)
 			a.GetServerInfo().UpdateUser(uidPack)
+		} else if len(a.GetServerInfo().GetUsers()) == 0 {
+			// 多端口：每个监听端口自己就是一个账号，密码表恒空，两端都按本端口密钥算会话 key，
+			// 包里的身份编号随包随机、不参与记账
+			a.UserKey = a.GetServerInfo().GetKey()
 		} else {
-			return []byte{}, false, errors.New(fmt.Sprintf("user %v not exist", uid))
+			// 单端口且不认识这个身份（账号已摘、客户端还拿旧订阅重连）：表上没有这个账号，
+			// 就没有任何 key 能验证这条流，按握手不匹配收尾即可。继续往下只会在必然失配之后再
+			// 落回同一出口，中间还多等一轮读包、把连接挂在半开状态
+			result, sendback = a.NotMatchReturn(a.RecvBuf)
+			return
 		}
 
 		encryptor, err := ciphers.NewEncryptorWithIv("aes-128-cbc",
@@ -368,6 +382,11 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 		if len(a.RecvBuf) < int(length) {
 			return []byte{}, false, nil
 		}
+		// length 取自解密结果，包头损坏时它是垃圾：负下标切片会 panic，先按握手不匹配收尾
+		if length < 7 {
+			result, sendback = a.NotMatchReturn(a.RecvBuf)
+			return result, sendback, nil
+		}
 		utcTime := binaryx.LEBytesToUInt32(head[:4])
 		clientId := binaryx.LEBytesToUInt32(head[4:8])
 		connectionId := binaryx.LEBytesToUInt32(head[8:12])
@@ -386,7 +405,7 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 				hex.EncodeToString(head))
 			result, sendback = a.NotMatchReturn(a.RecvBuf)
 			return result, sendback, nil
-		} else if core.GetApp().GetObfsProtocolService().Insert(a.UserID, int(clientId), int(connectionId)) {
+		} else if core.GetApp().GetObfsProtocolService().Insert(a.SessionKey(), int(clientId), int(connectionId)) {
 			a.HasRecvHeader = true
 			result = a.RecvBuf[31+rndLen : length-4]
 			a.ClientID = int(clientId)
@@ -455,7 +474,7 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 		}
 	}
 	if len(result) > 0 {
-		core.GetApp().GetObfsProtocolService().Update(a.UserID, a.ClientID, int(a.ConnectionID))
+		core.GetApp().GetObfsProtocolService().Update(a.SessionKey(), a.ClientID, int(a.ConnectionID))
 	}
 	return result, sendback, nil
 }
@@ -502,14 +521,17 @@ func (a *AuthAes128Sha1) ServerUDPPreEncrypt(buf, uid []byte) ([]byte, error) {
 func (a *AuthAes128Sha1) ServerUDPPostDecrypt(buf []byte) ([]byte, string, error) {
 	var userKey []byte
 	uidPack := buf[len(buf)-8 : len(buf)-4]
-	if a.GetServerInfo().GetUsers()[string(uidPack)] != "" {
-		userKey = hashSum([]byte(a.GetServerInfo().GetUsers()[string(uidPack)]), a.HashFunc)
+	if passwd := a.GetServerInfo().GetUsers()[string(uidPack)]; passwd != "" {
+		userKey = hashSum([]byte(passwd), a.HashFunc)
 	} else {
-		userKey = nil
+		// 认不出这个身份就不能把它当账号带出去：调用方按返回的 uid 记账与回包
+		uidPack = nil
 		if len(a.GetServerInfo().GetUsers()) == 0 {
+			// 多端口：本端口自己就是账号，两端都按本端口密钥封包
 			userKey = a.GetServerInfo().GetKey()
 		} else {
-			userKey = a.GetServerInfo().GetRecvIv()
+			// 表上没有这个账号，就没有任何 key 能验证这个包，整包丢弃
+			return []byte{}, "", nil
 		}
 	}
 	macData := hmacSum(userKey, buf[:len(buf)-4], a.HashFunc)[:4]

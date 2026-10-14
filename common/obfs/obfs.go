@@ -35,10 +35,36 @@ type Plain interface {
 
 var (
 	method_supported = make(map[string]PlainFactory)
+	// identityBearing 记录哪些协议名会在鉴权包头里带账号身份编号。
+	// 单端口模式只有一个监听端口，账号只能靠包头这 4 字节区分，所以只能用这里的协议；
+	// 其余协议配成单端口时节点认不出谁在连，流量、在线与限速全部落空
+	identityBearing = make(map[string]bool)
 )
 
 func registerMethod(method string, factory PlainFactory) {
 	method_supported[method] = factory
+}
+
+// registerIdentityBearing 由各 auth 代际在自己的 init 里与 registerMethod 并排声明
+func registerIdentityBearing(methods ...string) {
+	for _, method := range methods {
+		identityBearing[method] = true
+	}
+}
+
+// CarriesIdentity 判断该协议名能否在单端口模式下区分账号
+func CarriesIdentity(method string) bool {
+	return identityBearing[method]
+}
+
+// IdentityBearingNames 返回所有可携带账号身份的协议名，供配置校验与测试对账使用
+func IdentityBearingNames() []string {
+	names := make([]string, 0, len(identityBearing))
+	for name := range identityBearing {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func GetObfs(method string) (Plain, error) {
