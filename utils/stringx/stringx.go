@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -51,47 +50,22 @@ func MustUnquote(s string) string {
 // Convert string like \u4f60\u597d to utf-8 encode
 // \u4f60\u597d means 你好(hello)
 func UnicodeToUtf8(s string) string {
-	slen := len(s)
-	i := 0
-	stringBuffer := new(bytes.Buffer)
-	for i < slen {
-		if s[i] == 92 && (s[i+1] == 85 || s[i+1] == 117) {
-			temp, err := strconv.ParseInt(s[i+2:i+6], 16, 32)
-			if err != nil {
-				panic(err)
-			}
-			stringBuffer.WriteString(fmt.Sprintf("%c", temp))
-			i += 6
-			continue
-		} else {
-			stringBuffer.WriteByte(s[i])
-			i++
-			continue
-		}
-	}
-	return stringBuffer.String()
+	return BUnicodeToUtf8([]byte(s))
 }
 
-// Convert string like \u4f60\u597d to utf-8 encode
-// \u4f60\u597d means 你好(hello)
+// BUnicodeToUtf8 解 \uXXXX 转义；转义不完整或十六进制非法时原样保留，不 panic —— 它跑在面板响应文本上
 func BUnicodeToUtf8(s []byte) string {
-	slen := len(s)
-	i := 0
 	stringBuffer := new(bytes.Buffer)
-	for i < slen {
-		if s[i] == 92 && (s[i+1] == 85 || s[i+1] == 117) {
-			temp, err := strconv.ParseInt(string(s[i+2:i+6]), 16, 32)
-			if err != nil {
-				panic(err)
+	for i := 0; i < len(s); {
+		if s[i] == 92 && i+6 <= len(s) && (s[i+1] == 85 || s[i+1] == 117) {
+			if temp, err := strconv.ParseInt(string(s[i+2:i+6]), 16, 32); err == nil {
+				stringBuffer.WriteRune(rune(temp))
+				i += 6
+				continue
 			}
-			stringBuffer.WriteString(fmt.Sprintf("%c", temp))
-			i += 6
-			continue
-		} else {
-			stringBuffer.WriteByte(s[i])
-			i++
-			continue
 		}
+		stringBuffer.WriteByte(s[i])
+		i++
 	}
 	return stringBuffer.String()
 }
