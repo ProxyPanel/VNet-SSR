@@ -63,6 +63,47 @@ func TestReportTrafficSkipsUnattributableBytes(t *testing.T) {
 	}
 }
 
+// 在线批次与流量同一套语义：没送达就整批原样重发（report_id 不变，面板据此去重），
+// 绝不并回 s.online——并回会让集合排不空、把同一批人每分钟重复上报成新的在线行
+func TestReportOnlineDrainsAndRequeuesOnFailure(t *testing.T) {
+	s := NewShadowsocksrService()
+	// Online() 经 IdentityToUid 反查账号；测试里直接铺身份编号→uid 的索引
+	s.identityIndex[1] = 1
+	s.identityIndex[2] = 2
+	s.Online(1, "1.2.3.4:1000")
+	s.Online(2, "5.6.7.8:1000")
+
+	first := s.ReportOnline()
+
+	if len(first) != 2 {
+		t.Fatalf("两个在线账号都要上报: %+v", first)
+	}
+	if len(s.online) != 0 {
+		t.Fatalf("上报后待上报表应清空: %+v", s.online)
+	}
+	if first[0].ReportID == "" || first[0].ReportID != first[1].ReportID {
+		t.Fatalf("同一批的所有行要共用一个非空 report_id: %+v", first)
+	}
+
+	s.requeueOnline(first)
+	s.Online(1, "9.9.9.9:1000") // 重投期间又连上来的
+
+	second := s.ReportOnline()
+
+	if !reflect.DeepEqual(second, first) {
+		t.Fatalf("重发的必须是同一批、同一个 report_id，而不是与新连接合并后的结果: %+v", second)
+	}
+
+	third := s.ReportOnline()
+
+	if len(third) != 1 || third[0].Uid != 1 || third[0].IP != "9.9.9.9" {
+		t.Fatalf("重投期间的新连接要留在待上报表里，不能丢: %+v", third)
+	}
+	if third[0].ReportID == first[0].ReportID {
+		t.Fatalf("新一批必须换新 report_id，否则会被面板当成旧那批丢掉: %+v vs %+v", third, first)
+	}
+}
+
 func TestApplyUserDropsDisabledAccount(t *testing.T) {
 	s := NewShadowsocksrService()
 	s.userTable[1] = &model.UserInfo{Uid: 1, Port: 1001, Passwd: "p", Enable: 1}

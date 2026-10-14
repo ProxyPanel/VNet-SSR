@@ -68,8 +68,12 @@ type SSRManager struct {
 	cancel context.CancelFunc
 	// pendingTraffic 是上一次没送达的整批增量；面板按行上的 report_id 去重，所以整批原样重发、不再与新的合并
 	pendingTraffic []*model.UserTraffic
-	bootStamp      int64
-	reportSeq      uint64
+	// pendingOnline 同 pendingTraffic：在线批次没送达就整批留到下一轮原样重发（report_id 不变），
+	// 不再并回 s.online——并回会让集合排不空、把同一批人每分钟重复上报成新的在线行
+	pendingOnline   []*model.NodeOnline
+	bootStamp       int64
+	reportSeq       uint64
+	onlineReportSeq uint64
 }
 
 // IdentityToUid 按线上身份编号反查账号，查不到返回 0
@@ -166,44 +170,43 @@ func (s *SSRManager) Online(identity int, ip string) {
 	}
 }
 
+// ReportOnline 取一批待上报的在线记录：上一批没送达就先原样重发那一批（report_id 不变，面板据此去重），
+// 否则取走当前累计的快照并给它一个新 id。清空发生在发送之前，这一分钟的在线在面板侧只有一份记录
 func (s *SSRManager) ReportOnline() []*model.NodeOnline {
 	s.onlineLock.Lock()
 	defer s.onlineLock.Unlock()
 
+	if len(s.pendingOnline) > 0 {
+		pending := s.pendingOnline
+		s.pendingOnline = nil
+		return pending
+	}
+
 	reportData := s.online
+	s.online = make(map[int]*model.NodeOnline)
+
+	s.onlineReportSeq++
+	reportID := fmt.Sprintf("%d-%d-%d", core.GetApp().NodeId(), s.bootStamp, s.onlineReportSeq)
+
 	convertReportData := make([]*model.NodeOnline, 0, len(reportData))
 	for _, value := range reportData {
+		value.ReportID = reportID
 		convertReportData = append(convertReportData, value)
 	}
-	s.online = make(map[int]*model.NodeOnline)
 
 	return convertReportData
 }
 
-// requeueOnline 把没送达的在线记录并回待上报表，IP 去重沿用 Online() 的拼接判据
+// requeueOnline 把没送达的整批留在原地等下一轮原样重发；并回 s.online 会让集合排不空、把同一批人反复上报成新的在线行
 func (s *SSRManager) requeueOnline(data []*model.NodeOnline) {
 	s.onlineLock.Lock()
 	defer s.onlineLock.Unlock()
 
-	for _, value := range data {
-		current := s.online[value.Uid]
-		if current == nil {
-			current = &model.NodeOnline{Uid: value.Uid}
-			s.online[value.Uid] = current
-		}
-
-		for _, ip := range strings.Split(value.IP, ",") {
-			if ip == "" || strings.Contains(current.IP, ip) {
-				continue
-			}
-
-			if current.IP == "" {
-				current.IP = ip
-			} else {
-				current.IP = current.IP + "," + ip
-			}
-		}
+	if len(s.pendingOnline) > 0 {
+		logrus.Errorf("pending online batch is not empty, drop %d rows", len(data))
+		return
 	}
+	s.pendingOnline = data
 }
 
 func (s *SSRManager) ReportNodeStatus() model.NodeStatus {

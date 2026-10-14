@@ -40,6 +40,9 @@ type UserTraffic struct {
 type NodeOnline struct {
 	Uid int    `json:"uid"`
 	IP  string `json:"ip"`
+	// ReportID 同一批在线记录共用，重发时不变：面板按 (node_id, report_id) 认领去重，
+	// 否则「面板已入账但响应丢失」的那一批会被再插一遍在线行
+	ReportID string `json:"report_id"`
 }
 
 type NodeStatus struct {
