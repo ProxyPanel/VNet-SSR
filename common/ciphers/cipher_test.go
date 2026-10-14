@@ -6,7 +6,6 @@ import (
 	"crypto/cipher"
 	"encoding/hex"
 	"fmt"
-	"github.com/ProxyPanel/VNet-SSR/common/log"
 	"github.com/ProxyPanel/VNet-SSR/utils/bytesx"
 	"strings"
 	"testing"
@@ -83,176 +82,118 @@ func TestEncryptorEncryptForStream(t *testing.T) {
 	}
 }
 
-func TestEncryptorEncryptForAead(t *testing.T) {
-	encryptor, err := NewEncryptor("aes-128-gcm", "killer")
-	if err != nil {
-		fmt.Println(err)
-		return
+// 一次握手两侧各持一个 Encryptor：加密侧首包自带 IV/salt，解密侧从密文前缀取 IV。
+// 这条路径就是线上形状，rc4 与分组模式都由 auth 层直接依赖；明文按整块取，避开分组模式的尾巴
+func TestEncryptorRoundTrip(t *testing.T) {
+	for _, method := range []string{"aes-128-cfb", "aes-128-cbc", "rc4", "aes-128-gcm", "chacha20-ietf"} {
+		t.Run(method, func(t *testing.T) {
+			plain := []byte(strings.Repeat("a", 16) + strings.Repeat("b", 16))
+			encryptor, err := NewEncryptor(method, "killer")
+			if err != nil {
+				t.Fatalf("%s 构造失败: %v", method, err)
+			}
+			decryptor, err := NewEncryptor(method, "killer")
+			if err != nil {
+				t.Fatalf("%s 构造失败: %v", method, err)
+			}
+			ciphertext, err := encryptor.Encrypt(plain)
+			if err != nil {
+				t.Fatalf("%s 加密失败: %v", method, err)
+			}
+			if !bytes.HasPrefix(ciphertext, encryptor.IVOut) {
+				t.Fatalf("%s 首包没有带 IV/salt 前缀: %x (IVOut=%x)", method, ciphertext, encryptor.IVOut)
+			}
+			cleartext, err := decryptor.Decrypt(ciphertext)
+			if err != nil {
+				t.Fatalf("%s 解密失败: %v", method, err)
+			}
+			if !bytes.Equal(cleartext, plain) {
+				t.Fatalf("%s 往返不一致\n want: %x\n got:  %x", method, plain, cleartext)
+			}
+		})
 	}
-	raw := []byte("fuckyou asdasdasd asdasdasd asdasdasd asdasdasdasd asdasdasdasdasdassadasd5464g9s7g498y5u4678084%^&*(2340- q%T^&()i234-08^&@(#@98uj ndfu09we q2 (*^*(&*)r2343890(*)*#43290*#$@#$&*89&(*)@#$@*$(&@)#$@#$&_9 nsf666-*/*-94fs9 sdf4 4t %^&*(#)@$ ops f")
-	fmt.Println(hex.EncodeToString(raw))
-	result, err := encryptor.Encrypt(raw)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Println("ciphertext result: " + hex.EncodeToString(result))
-
-	_, err = encryptor.Decrypt(result[:len(result)/2])
-	if err != nil {
-		fmt.Println(err)
-	}
-	result, err = encryptor.Decrypt(result[len(result)/2:])
-	if err != nil {
-		fmt.Println(err)
-	}
-	fmt.Println("plain text: " + hex.EncodeToString(result))
 }
 
-func TestEncryptor_Decrypt_CBC(t *testing.T) {
+// 分组模式没有字节粒度：不足一块的尾巴留到下一次写出，既不丢也不提前 emit
+func TestEncryptorCBCcarriesSubBlockTail(t *testing.T) {
 	encryptor, err := NewEncryptor("aes-128-cbc", "killer")
 	if err != nil {
-		fmt.Println(err)
-		return
+		t.Fatal(err)
 	}
-	param, err := hex.DecodeString("21f655208455c2a14366e541958d5efd")
+	decryptor, err := NewEncryptor("aes-128-cbc", "killer")
 	if err != nil {
-		fmt.Println(err)
-		return
+		t.Fatal(err)
 	}
-	result, err := encryptor.Decrypt(bytesx.ContactSlice(bytes.Repeat([]byte{0x00},16),param))
+	first := bytes.Repeat([]byte("a"), 30)
+	second := []byte("bc")
+	out1, err := encryptor.Encrypt(first)
 	if err != nil {
-		fmt.Println(err)
-		return
+		t.Fatal(err)
 	}
-	fmt.Println(hex.EncodeToString(result))
+	// 首包带 16 字节 IV，其余只发整块：30 字节明文这一趟只能出 16 字节密文
+	if len(out1) != 32 {
+		t.Fatalf("首包应为 IV(16)+整块(16)，实得 %d", len(out1))
+	}
+	out2, err := encryptor.Encrypt(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out2) != 16 {
+		t.Fatalf("第二段应为凑成的整块 16，实得 %d", len(out2))
+	}
+	got, err := decryptor.Decrypt(out1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail, err := decryptor.Decrypt(out2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytesx.ContactSlice(first, second)
+	if all := bytesx.ContactSlice(got, tail); !bytes.Equal(all, want) {
+		t.Fatalf("分段往返不一致\n want: %x\n got:  %x", want, all)
+	}
+}
+
+// AEAD 的认证标签要真挡住篡改：改一字节就必须报错，否则加密层等于不设防
+func TestEncryptorAEADrejectsTamperedChunk(t *testing.T) {
+	encryptor, err := NewEncryptor("aes-128-gcm", "killer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decryptor, err := NewEncryptor("aes-128-gcm", "killer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := encryptor.Encrypt(bytes.Repeat([]byte("a"), 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext[len(ciphertext)-1] ^= 0xFF
+	if _, err := decryptor.Decrypt(ciphertext); err == nil {
+		t.Fatal("被篡改的 AEAD 包不应通过解密")
+	}
 }
 
 func TestEncryptor_Dulpx_CBC(t *testing.T) {
-	encrypt, err := NewEncryptorWithIv("aes-128-cbc", "@123",bytes.Repeat([]byte{0x00},16))
-	decrypt, err := NewEncryptorWithIv("aes-128-cbc", "@123",bytes.Repeat([]byte{0x00},16))
-	data := []byte(strings.Repeat("a",16))
-	if err !=nil{
+	encrypt, err := NewEncryptorWithIv("aes-128-cbc", "@123", bytes.Repeat([]byte{0x00}, 16))
+	if err != nil {
 		t.Fatal(err)
 	}
-	ciphertext,err := encrypt.Encrypt(data)
-	if err != nil{
+	decrypt, err := NewEncryptorWithIv("aes-128-cbc", "@123", bytes.Repeat([]byte{0x00}, 16))
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	cleartext,err := decrypt.Decrypt(ciphertext)
-	if err != nil{
+	data := []byte(strings.Repeat("a", 16))
+	ciphertext, err := encrypt.Encrypt(data)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(cleartext,data){
-		log.Info("orgin: %s\n cleartext: %s",data,cleartext)
-		t.Fatal("compare error")
+	cleartext, err := decrypt.Decrypt(ciphertext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cleartext, data) {
+		t.Fatalf("同 IV 两侧的 CBC 往返不一致\n want: %x\n got:  %x", data, cleartext)
 	}
 }
-
-func TestEncryptor_Encrypt_CBC(t *testing.T) {
-	encryptor, err := NewEncryptor("aes-128-cbc", "killer")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	result, err := encryptor.Encrypt(bytes.Repeat([]byte("a"), 16))
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Println(hex.EncodeToString(result))
-}
-
-func TestEncryptor_Decrypt_CFB(t *testing.T) {
-	encryptor, err := NewEncryptor("aes-128-cfb", "killer")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	param, err := hex.DecodeString("27fe5810f0d7109ecb66230d8760522342e705348223c74194783e5354b3a4ad")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	result, err := encryptor.Decrypt(param)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Println(hex.EncodeToString(result))
-}
-
-func TestEncryptor_Decrypt_RC4(t *testing.T) {
-	encryptor, err := NewEncryptor("rc4", "killer")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	param, err := hex.DecodeString("a395e09871e16334fd9f9da33ffb67c0")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	result, err := encryptor.Decrypt(param)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Println(hex.EncodeToString(result))
-
-	encryptor, _ = NewEncryptor("rc4", "a2lsbGVybCPp7mlgedshQ+TWgabdtQ==")
-	cleartext, _ := encryptor.Decrypt(bytesx.MustHexDecode("72193e8ab211df"))
-	fmt.Printf("%s|%s\n", hex.EncodeToString(cleartext), string(cleartext))
-	cleartext, _ = encryptor.Decrypt(bytesx.MustHexDecode("72193e8ab211df"))
-	fmt.Printf("%s|%s\n", hex.EncodeToString(cleartext), string(cleartext))
-	cleartext, _ = encryptor.Decrypt(bytesx.MustHexDecode("72193e8ab211df"))
-	fmt.Printf("%s|%s\n", hex.EncodeToString(cleartext), string(cleartext))
-
-}
-
-func ExampleNewCBCDecrypter() {
-	// Load your secret key from a safe place and reuse it across multiple
-	// NewCipher calls. (Obviously don't use this example key for anything
-	// real.) If you want to convert a passphrase to a key, use a suitable
-	// package like bcrypt or scrypt.
-	key, _ := hex.DecodeString("b36d331451a61eb2d76860e00c347396")
-	ciphertext, _ := hex.DecodeString("ebaf33c9c39ac769642cf078360b0539d58f0ebbc168b03d185891d71879286d")
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		panic(err)
-	}
-
-	// The IV needs to be unique, but not secure. Therefore it's common to
-	// include it at the beginning of the ciphertext.
-	if len(ciphertext) < aes.BlockSize {
-		panic("ciphertext too short")
-	}
-	iv := ciphertext[:aes.BlockSize]
-	ciphertext = ciphertext[aes.BlockSize:]
-
-	// CBC mode always works in whole blocks.
-	if len(ciphertext)%aes.BlockSize != 0 {
-		panic("ciphertext is not a multiple of the block size")
-	}
-
-	mode := cipher.NewCBCDecrypter(block, iv)
-
-	// CryptBlocks can work in-place if the two arguments are the same.
-	mode.CryptBlocks(ciphertext, ciphertext)
-
-	// If the original plaintext lengths are not a multiple of the block
-	// size, padding would have to be added when encrypting, which would be
-	// removed at this point. For an example, see
-	// https://tools.ietf.org/html/rfc5246#section-6.2.3.2. However, it's
-	// critical to note that ciphertexts must be authenticated (i.e. by
-	// using crypto/hmac) before being decrypted in order to avoid creating
-	// a padding oracle.
-
-	fmt.Printf("%s\n", ciphertext)
-	// Output: aaaaaaaaaaaaaaaa
-}
-
-
