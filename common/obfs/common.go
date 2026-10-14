@@ -206,6 +206,9 @@ func (c *ClientQueue) Insert(connectionID int) bool {
 
 type ObfsAuthChainData struct {
 	Name string
+	// mu 罩住 Buckets、MaxClient/MaxBuffer 与 ConnectionID/LocalClientId：
+	// 这个单例被全部监听端口的每连接、每包协程共用，漏一处锁就是不可 recover 的进程 fatal
+	mu sync.Mutex
 	// Buckets 按账号身份（4 字节小端的字符串形式）各挂一个连接 id 计数桶，
 	// MaxClient 是每桶上限，不是全节点上限
 	Buckets       map[string]*cache.LRU
@@ -227,6 +230,9 @@ func NewObfsAuthChainData(name string) *ObfsAuthChainData {
 }
 
 func (o *ObfsAuthChainData) Update(userID []byte, clientID, connectionID int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	if o.Buckets[string(userID)] == nil {
 		o.Buckets[string(userID)] = cache.NewLruCache(60 * time.Second)
 	}
@@ -241,11 +247,17 @@ func (o *ObfsAuthChainData) Update(userID []byte, clientID, connectionID int) {
 }
 
 func (o *ObfsAuthChainData) SetMaxClient(maxClient int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	o.MaxClient = maxClient
 	o.MaxBuffer = int(math.Max(float64(maxClient), 1024))
 }
 
 func (o *ObfsAuthChainData) Insert(userID []byte, clientID, connectionID int) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	if o.Buckets[string(userID)] == nil {
 		o.Buckets[string(userID)] = cache.NewLruCache(60 * time.Second)
 	}
@@ -281,6 +293,9 @@ func (o *ObfsAuthChainData) Insert(userID []byte, clientID, connectionID int) bo
 }
 
 func (o *ObfsAuthChainData) Remove(userID string, clientID int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	localClientID := o.Buckets[string(userID)]
 	if localClientID != nil {
 		if localClientID.IsExist(clientID) {
@@ -290,6 +305,9 @@ func (o *ObfsAuthChainData) Remove(userID string, clientID int) {
 }
 
 func (o *ObfsAuthChainData) AuthData() []byte {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	utcTime := uint32(time.Now().Unix() & 0xFFFFFFFF)
 	if o.ConnectionID > 0xFF000000 {
 		o.LocalClientId = []byte{}
