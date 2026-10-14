@@ -146,6 +146,22 @@ func TestValidateNodeInfoRejectsSinglePortWithoutIdentity(t *testing.T) {
 	}
 }
 
+// 分组模式带不了 UDP 数据报：每个包都是自带 IV 的一次性加解密，不足一块的尾巴没有下一批可等。
+// TCP 字节流按块边界走是可以的，所以只拒 UDP 那一半
+func TestValidateNodeInfoRejectsBlockCipherWithUDP(t *testing.T) {
+	if err := ValidateNodeInfo(&model.NodeInfo{Secret: testPushSecret, Method: "aes-128-cbc", IsUDP: 1}); err == nil {
+		t.Fatal("aes-128-cbc + is_udp=1 被接受了，数据报会静默截尾")
+	}
+	if err := ValidateNodeInfo(&model.NodeInfo{Secret: testPushSecret, Method: "aes-128-cbc"}); err != nil {
+		t.Fatalf("走 TCP 的 aes-128-cbc 不该被拒: %v", err)
+	}
+	for _, method := range []string{"aes-256-cfb", "chacha20-ietf-poly1305", "none"} {
+		if err := ValidateNodeInfo(&model.NodeInfo{Secret: testPushSecret, Method: method, IsUDP: 1}); err != nil {
+			t.Fatalf("%s + UDP 不该被拒: %v", method, err)
+		}
+	}
+}
+
 // 单端口配不带身份的协议时，重载要秒回拒绝并且不改写在跑的配置：
 // 判据排在打面板之前，面板可达与否都不该被这条坏配置波及
 func TestNodeReloadRejectsSinglePortWithoutIdentity(t *testing.T) {

@@ -453,7 +453,9 @@ components:
           description: 单端口模式的共享密码
         method:
           type: string
-          description: 必须在本后端注册表内（docs/capabilities.json）
+          description: 必须在本后端注册表内（docs/capabilities.json）。分组模式（`aes-128-cbc`）只走 TCP：
+            字节流按块边界走，不足一块的尾巴等下一批；UDP 每个数据报都是自带 IV 的一次性加解密，
+            尾巴没有下一批可等，所以 `is_udp=1` 配上分组模式会被拒绝落地
         protocol:
           type: string
           description: 同上

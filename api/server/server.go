@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/api/client"
+	"github.com/ProxyPanel/VNet-SSR/common/ciphers/block"
 	"github.com/ProxyPanel/VNet-SSR/common/log"
 	"github.com/ProxyPanel/VNet-SSR/common/obfs"
 	"github.com/ProxyPanel/VNet-SSR/core"
@@ -76,6 +77,13 @@ func ValidateNodeInfo(nodeInfo *model.NodeInfo) error {
 	if nodeInfo.Single == 1 && !obfs.CarriesIdentity(nodeInfo.Protocol) {
 		return errors.Errorf("single port mode needs a protocol that carries the account identity, %q carries none; usable: %s",
 			nodeInfo.Protocol, strings.Join(obfs.IdentityBearingNames(), ", "))
+	}
+	// 分组模式没有字节粒度的语义：TCP 字节流可以按块边界走（尾巴等下一批），但每个 UDP 数据报
+	// 都是自带 IV 的一次性加解密，没有下一批可等，不足一块的尾巴只能丢。
+	// 与其让数据报静默截尾，不如把这种组合拒在落地之前
+	if nodeInfo.IsUDP == 1 && block.GetBlockCipher(nodeInfo.Method) != nil {
+		return errors.Errorf("%s is a block cipher and cannot carry UDP datagrams; pick a stream cipher or set is_udp to 0",
+			nodeInfo.Method)
 	}
 	return nil
 }

@@ -39,6 +39,28 @@ type SSCipher struct {
 	AEADReadBuffer *bytes.Buffer
 	HeadSize       int
 	Method         string
+	// blockPending 是分组模式在字节流上不足一块的尾巴，见 blockAligned
+	blockPending []byte
+}
+
+// blockAligned 把 src 接在上次剩下的尾巴之后，返回可以整块处理的部分，不足一块的留在尾巴里等下一批。
+// 分组模式没有字节粒度的语义：参照实现只调 EVP_CipherUpdate、从不调 EVP_CipherFinal，
+// 观察到的行为就是「只发整块、尾巴扣在上下文中」，这里按同一条判据走，而不是拿任意长度去喂
+// CryptBlocks（那会直接 panic）
+func (s *SSCipher) blockAligned(src []byte) []byte {
+	blockSize := s.BlockMode.BlockSize()
+	data := src
+	if len(s.blockPending) > 0 {
+		data = bytesx.ContactSlice(s.blockPending, src)
+		s.blockPending = nil
+	}
+	aligned := len(data) - len(data)%blockSize
+	if aligned < len(data) {
+		tail := make([]byte, len(data)-aligned)
+		copy(tail, data[aligned:])
+		s.blockPending = tail
+	}
+	return data[:aligned]
 }
 
 func NewCipher(op int, method string, key, iv []byte) (*SSCipher, error) {
@@ -130,8 +152,12 @@ func (s *SSCipher) Encrypt(src []byte) (result []byte, err error) {
 		return dst.Bytes(), err
 	}
 	if s.BlockMode != nil {
-		dst := make([]byte, len(src))
-		s.BlockMode.CryptBlocks(dst, src)
+		aligned := s.blockAligned(src)
+		if len(aligned) == 0 {
+			return []byte{}, nil
+		}
+		dst := make([]byte, len(aligned))
+		s.BlockMode.CryptBlocks(dst, aligned)
 		return dst, nil
 	}
 	return nil, errors.WithStack(errors.New("unreachable code"))
@@ -198,8 +224,12 @@ func (s *SSCipher) Decrypt(ciphertext []byte) (result []byte, err error) {
 		return dst.Bytes(), nil
 	}
 	if s.BlockMode != nil {
-		dst := make([]byte, len(ciphertext))
-		s.BlockMode.CryptBlocks(dst, ciphertext)
+		aligned := s.blockAligned(ciphertext)
+		if len(aligned) == 0 {
+			return []byte{}, nil
+		}
+		dst := make([]byte, len(aligned))
+		s.BlockMode.CryptBlocks(dst, aligned)
 		return dst, nil
 	}
 	return nil, errors.WithStack(errors.New("unknow ciphers"))
