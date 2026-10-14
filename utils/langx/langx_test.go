@@ -5,13 +5,6 @@ import (
 	"testing"
 )
 
-func TestInArray(t *testing.T){
-	r,_ := InArray("a",[]string{"a","b"})
-	if !r {
-		t.Fatal("r not exist")
-	}
-}
-
 func ExampleFirstResult() {
 	fmt.Println(FirstResult(Abc))
 

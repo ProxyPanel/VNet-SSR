@@ -281,7 +281,6 @@ func (otls *ObfsTLS) ServerEncode(buf []byte) ([]byte, error) {
 
 // ServerDecode return buffer_to_recv, is_need_decrypt, is_need_to_encode_and_send_back
 func (otls *ObfsTLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
-	//log.Debug("HandshakeStatus %d otls.RecvBufferLength %d",otls.HandshakeStatus,len(otls.RecvBuffer))
 	if otls.HandshakeStatus == -1 {
 		return buf, true, false, nil
 	}
@@ -301,16 +300,12 @@ func (otls *ObfsTLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 
 			size := binary.BigEndian.Uint16(otls.RecvBuffer[3:5])
 			if len(otls.RecvBuffer) < int(size)+5 {
-				//log.Debug("size :%d",size)
 				break
 			}
 			binary.Write(ret, binary.BigEndian, otls.RecvBuffer[5:size+5])
 			otls.RecvBuffer = otls.RecvBuffer[size+5:]
 		}
 
-		//if ret.Len() == 0{
-		//	log.Debug("dataLength %d, RecvBufferLength %d, retLength %d",len(buf),len(otls.RecvBuffer),ret.Len())
-		//}
 		return ret.Bytes(), true, false, nil
 	}
 

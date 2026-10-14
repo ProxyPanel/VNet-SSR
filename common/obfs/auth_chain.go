@@ -406,14 +406,6 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 			recvLen := int(math.Min(float64(len(a.RecvBuf)), float64(12)))
 			macKey := bytesx.ContactSlice(a.GetServerInfo().GetRecvIv(), a.GetServerInfo().GetKey())
 			md5Data = hmacmd5(macKey, a.RecvBuf[:4])
-			//logrus.WithFields(
-			//	logrus.Fields{
-			//		"md5Data":   hex.EncodeToString(md5Data),
-			//		"key":       hex.EncodeToString(a.GetServerInfo().GetKey()),
-			//		"randBytes": hex.EncodeToString(a.RecvBuf[:4]),
-			//		"recvIV":    hex.EncodeToString(a.GetServerInfo().GetRecvIv()),
-			//		"recvLen":   recvLen,
-			//	}).Debug("AuthChainA verify")
 			if !bytes.Equal(md5Data[:recvLen-4], a.RecvBuf[4:recvLen]) {
 				logrus.WithFields(logrus.Fields{
 					"md5Data":     hex.EncodeToString(md5Data[:recvLen-4]),
@@ -458,10 +450,6 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 
 		md5Data = hmacmd5(a.UserKey, a.RecvBuf[12:12+20])
 		if !bytes.Equal(md5Data[:4], a.RecvBuf[32:36]) {
-			//logrus.WithFields(logrus.Fields{
-			//	"md5Data_4": hex.EncodeToString(md5Data[:4]),
-			//	"recvBuf_4": hex.EncodeToString(a.RecvBuf[32:36]),
-			//}).Debug("auth_chain md5 equal error")
 			logrus.Errorf("%s data uncorrect auth HMAC-MD5 from %s:%v, data %s",
 				a.NoCompatibleMethod, a.GetServerInfo().
 					GetClient().String(),
@@ -717,20 +705,6 @@ func (a *AuthChainA) ServerUDPPostDecrypt(buf []byte) ([]byte, string, error) {
 
 func (a *AuthChainA) Dispose() {
 	core.GetApp().GetObfsProtocolService().Remove(string(a.SessionKey()), a.ClientID)
-}
-
-func (a *AuthChainA) trapezoidRandomFloat(d float64) float64 {
-	if d == 0 {
-		return randomx.Float64()
-	}
-	s := randomx.Float64()
-	tmp := 1 - d
-	return (math.Sqrt(tmp*tmp+4*d*s) - tmp) / (2 * d)
-}
-
-func (a *AuthChainA) trapezoidRandomInt(maxVal, d float64) int {
-	v := a.trapezoidRandomFloat(d)
-	return int(v * maxVal)
 }
 
 func (a *AuthChainA) rndDataLen(bufSize int, lastHash []byte, random *XorShift128Plus) int {

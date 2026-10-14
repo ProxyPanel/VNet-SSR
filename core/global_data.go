@@ -18,7 +18,6 @@ func GetApp() *App {
 
 type App struct {
 	nodeInfo            *model.NodeInfo
-	userInfos           []*model.UserInfo
 	nodeId              int
 	apiHost             string
 	key                 string
@@ -28,14 +27,6 @@ type App struct {
 
 func (a *App) Init() error {
 	return nil
-}
-
-func (a *App) UserInfos() []*model.UserInfo {
-	return a.userInfos
-}
-
-func (a *App) SetUserInfos(userInfos []*model.UserInfo) {
-	a.userInfos = userInfos
 }
 
 func (a *App) Host() string {

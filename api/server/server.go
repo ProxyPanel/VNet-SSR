@@ -300,7 +300,3 @@ func fail(c *gin.Context, err error) {
 func success(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": "true", "content": "sucess"})
 }
-
-func successWithData(c *gin.Context, data interface{}) {
-	c.JSON(http.StatusOK, gin.H{"success": "true", "content": "sucess", "data": data})
-}

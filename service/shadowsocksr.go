@@ -494,29 +494,6 @@ func (s *SSRManager) RegisterDelUserHandle(handle DelUserHandle) {
 	s.delUserHanelds = append(s.delUserHanelds, handle)
 }
 
-//
-//func (s *SSRManager) RestartWithNodeInfo(nodeInfo *model.NodeInfo) error {
-//	users := s.GetUserList()
-//
-//	usersCopy := make([]*model.UserInfo, 0, len(users))
-//	uids := make([]int, 0, len(users))
-//
-//	for _, user := range users {
-//		uids = append(uids, user.Uid)
-//		usersCopy = append(usersCopy, user)
-//	}
-//	err := s.DelUsers(uids)
-//	if err != nil {
-//		return err
-//	}
-//	err = s.AddUsers(usersCopy)
-//	if err != nil {
-//		return err
-//	}
-//
-//	return nil
-//}
-
 // ReportTask 用启动时传入的 ctx 退出：Restart 会替换 s.Context，协程里再读那个字段就盯不到自己的 cancel
 func (s *SSRManager) ReportTask(ctx context.Context) {
 	log.Info("ReportTask start")

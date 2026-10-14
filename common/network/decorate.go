@@ -250,7 +250,6 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 	}
 	ssrd.recvBuf.Write(data)
 	n, err = ssrd.recvBuf.Read(buf)
-	//log.Debug("n:%d,err:%v",n,err)
 	return n, err
 }
 
@@ -267,24 +266,14 @@ func (ssrd *ShadowsocksRDecorate) Write(buf []byte) (n int, err error) {
 	if err != nil {
 		return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate protocol service encode error.", ssrd.RequestID))
 	}
-	//logrus.WithFields(logrus.Fields{
-	//	"ServerPreEncryptWriteData": hex.EncodeToString(data),
-	//	//"LastServerHash":hex.EncodeToString(ssrd.protocol.(*obfs.AuthChainA).LastServerHash),
-	//}).Debug("shadowoscksr Write ServerPreEncrypt")
 	data, err = ssrd.encryptor.Encrypt(data)
 	if err != nil {
 		return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate encryptor encrypt error.", ssrd.RequestID))
 	}
-	//logrus.WithFields(logrus.Fields{
-	//	"EncryptWriteData": hex.EncodeToString(data),
-	//}).Debug("shadowoscksr Write Encrypt")
 	data, err = ssrd.obfs.ServerEncode(data)
 	if err != nil {
 		return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate obfs service encode error.", ssrd.RequestID))
 	}
-	//logrus.WithFields(logrus.Fields{
-	//	"ServerEncodeWriteData": hex.EncodeToString(data),
-	//}).Debug("shadowoscksr Write ServerEncode")
 	n, err = ssrd.Conn.Write(data)
 	if err != nil {
 		return 0, err

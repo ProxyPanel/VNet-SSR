@@ -314,7 +314,6 @@ func (o *ObfsAuthChainData) AuthData() []byte {
 	}
 	if o.LocalClientId == nil || len(o.LocalClientId) == 0 {
 		o.LocalClientId = randomx.RandomBytes(4)
-		//log.Debug("local_client_id %s", hex.EncodeToString(o.ObfsAuthChainDato.LocalClientId))
 		o.ConnectionID = binaryx.LEBytesToUInt32(randomx.RandomBytes(4))
 	}
 	o.ConnectionID++

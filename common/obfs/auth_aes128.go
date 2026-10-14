@@ -159,12 +159,10 @@ func (a *AuthAes128Sha1) packData(buf []byte, fullBufSize int) []byte {
 	data := bytesx.ContactSlice(a.rndData(len(buf), fullBufSize), buf)
 	dataLen := len(data) + 8
 	macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(a.PackID))
-	//log.Debug("packData macKey: %s",hex.EncodeToString(macKey))
 	mac := hmacSum(macKey, binaryx.LEUInt16ToBytes(uint16(dataLen)), a.HashFunc)[:2]
 	data = bytesx.ContactSlice(binaryx.LEUInt16ToBytes(uint16(dataLen)), mac, data)
 	data = bytesx.ContactSlice(data, hmacSum(macKey, data, a.HashFunc)[:4])
 	a.PackID++
-	//log.Debug("packData result: %s",hex.EncodeToString(data))
 	return data
 }
 
@@ -207,7 +205,6 @@ func (a *AuthAes128Sha1) packAuthData(authData, buf []byte) ([]byte, error) {
 	encryptor, err := ciphers.NewEncryptorWithIv("aes-128-cbc",
 		string(bytesx.ContactSlice([]byte(base64.StdEncoding.EncodeToString(a.UserKey)), a.Salt)),
 		bytes.Repeat([]byte{0x00}, 16))
-	//log.Debug("packAuthData use encryptor key: %s",hex.EncodeToString(encryptor.Key))
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +212,6 @@ func (a *AuthAes128Sha1) packAuthData(authData, buf []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	//log.Debug("packAuthData pack after encrypt head: %s", hex.EncodeToString(dataEncrypt[16:]))
 	data = bytesx.ContactSlice(uidPack, dataEncrypt[16:])
 	data = bytesx.ContactSlice(data, hmacSum(macKey, data, a.HashFunc)[:4])
 	checkHead := randomx.RandomBytes(1)
@@ -371,13 +367,10 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 		if err != nil {
 			return []byte{}, false, err
 		}
-		//log.Debug("ServerPostDecrypt use encryptor key: %s",hex.EncodeToString(encryptor.Key))
-		//log.Debug("ServerPostDecrypt head before decrypt: %s", hex.EncodeToString(a.RecvBuf[11:27]))
 		head, err := encryptor.Decrypt(bytesx.ContactSlice(bytes.Repeat([]byte{0x00}, 16), a.RecvBuf[11:27]))
 		if err != nil {
 			return []byte{}, false, err
 		}
-		//log.Debug("ServerPostDecrypt head  after decrypt: %s", hex.EncodeToString(head))
 		length := binaryx.LEBytesToUint16(head[12:14])
 		if len(a.RecvBuf) < int(length) {
 			return []byte{}, false, nil
@@ -420,9 +413,7 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 		sendback = true
 	}
 	for len(a.RecvBuf) > 4 {
-		//log.Debug("ServerPostDecrypt data: %s",hex.EncodeToString(a.RecvBuf))
 		macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(a.RecvID))
-		//log.Debug("ServerPostDecrypt decode packData macKey: %s",hex.EncodeToString(macKey))
 		mac := hmacSum(macKey, a.RecvBuf[:2], a.HashFunc)[:2]
 		if !bytes.Equal(mac, a.RecvBuf[2:4]) {
 			a.RawTrans = true

@@ -82,7 +82,7 @@ go run ./cmd/capabilities > docs/capabilities.json
 
 ```bash
 go build -o vnet ./cmd/shadowsocksr-server   # 只编当前平台
-go test ./...                                # 31 个包有测试，全部离线（httptest 与内存内回环，不连面板也不连外网）
+go test ./...                                # 27 个包有测试，全部离线（httptest 与内存内回环，不连面板也不连外网）
 go vet ./...
 make                                         # 全平台交叉编译，产物落 bin/
 make package                                 # 打成部署脚本认的 zip，落 dist/
@@ -120,7 +120,7 @@ CI（`.github/workflows/build.yml`）依次跑 `bash -n release/*.sh`（脚本�
 | `common/network` | 连接装饰器、监听器、转发请求 |
 | `common/{cache,pool,capabilities,log}` | LRU 缓存、字节池、算法名单、日志 |
 | `model` | 与面板交换的数据结构；字段级契约的唯一来源是 `docs/openapi.yaml` |
-| `utils` | `addrx`/`netx`/`iox`/`sniff`/`socksproxy`/`stringx` 等不带领域的小工具 |
+| `utils` | `addrx`/`binaryx`/`bytesx`/`netx`/`randomx`/`sniff`/`socksproxy`/`stringx` 等不带领域的小工具，全部按子包分 |
 | `release` | `deploy.sh`/`upgrade.sh`/`tune.sh`/`package.sh`/`version.json`/`config.json`/systemd 与 sysv 单元 |
 | `cmd` | `shadowsocksr-server` 入口；`capabilities` 名单生成器 |
 
