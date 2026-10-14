@@ -248,7 +248,13 @@ func (h *HttpSimple) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 			if pos >= 0 {
 				host = host[:pos]
 			}
-			hosts := strings.Split(h.GetServerInfo().GetObfsParam(), ",")
+			// obfs_param 的「#」后段是客户端伪造的响应体，不进 Host 白名单：
+			// 不剥掉它，带 # 的 param 会让白名单里只剩一个带尾巴的域名，把正常连接判成不匹配
+			param := h.GetServerInfo().GetObfsParam()
+			if cut := strings.Index(param, "#"); cut >= 0 {
+				param = param[:cut]
+			}
+			hosts := strings.Split(param, ",")
 			if !arrayx.FindStringInArray(host, hosts) {
 				return h.notMatchReturn(buf)
 			}
