@@ -75,7 +75,7 @@ func (l *lrucache) First() interface{} {
 
 func (l *lrucache) Len() int {
 	var result int = 0
-	l.mapping.Range(func(key, valye interface{}) bool {
+	l.mapping.Range(func(key, value interface{}) bool {
 		result++
 		return true
 	})
@@ -127,7 +127,7 @@ func NewLruCache(interval time.Duration) *LRU {
 	}
 	go j.process(c)
 	lru := &LRU{c}
-	// this is very interesting,it worth be deep learning
+	// 终结器只在缓存被回收之后才停 janitor，丢弃缓存不等于立刻停掉那个协程
 	runtime.SetFinalizer(lru, stopLruJanitor)
 	return lru
 }

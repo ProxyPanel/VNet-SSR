@@ -106,7 +106,7 @@ func New(interval time.Duration) *Cache {
 	c := &cache{janitor: j}
 	go j.process(c)
 	C := &Cache{c}
-	// this is very interesting,it worth be deep learning
+	// 终结器只在 Cache 被回收之后才停 janitor，丢弃缓存不等于立刻停掉那个协程
 	runtime.SetFinalizer(C, stopJanitor)
 	return C
 }
