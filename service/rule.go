@@ -195,10 +195,13 @@ type triggerQueue struct {
 	mu      sync.Mutex
 	pending []model.Trigger
 	wake    chan struct{}
+	// send 是投一条出去的接缝：默认走 client.PostTrigger，用例注入桩函数。
+	// 做成字段而不是让用例改 client.Host —— 那是包级变量，本包的后台协程在读它，改就是数据竞争
+	send func(model.Trigger) error
 }
 
 func newTriggerQueue() *triggerQueue {
-	q := &triggerQueue{wake: make(chan struct{}, 1)}
+	q := &triggerQueue{wake: make(chan struct{}, 1), send: client.PostTrigger}
 	go goroutine.Protect(q.loop)
 	return q
 }
@@ -240,7 +243,7 @@ func (q *triggerQueue) drain() {
 		head := q.pending[0]
 		q.mu.Unlock()
 
-		if err := client.PostTrigger(head); err != nil {
+		if err := q.send(head); err != nil {
 			if !errors.Is(err, client.ErrRejected) {
 				log.Err(err) // 留在队首，下一拍重试；顺序保持，先违的规先入账
 				return

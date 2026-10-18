@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -310,5 +311,51 @@ func TestRetryStopsOnSuccessAndExhausts(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("重试次数 = %d, want 3", calls)
+	}
+}
+
+// 面板的 HTTP 400 同时表示两种完全不同的事：「参数错误」（这条载荷永远不会被接受）与
+// 「写库失败」（库整笔回滚，重投就能救回来）。按状态码判会把后者当前者丢掉，
+// 所以只有业务码 400200 折成 ErrRejected
+func TestPostMarksOnlyParameterErrorAsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"参数错误", `{"status":"fail","code":400200,"message":"参数错误"}`, true},
+		{"写库失败", `{"status":"fail","code":400201,"message":"上报用户触发审计规则日志失败"}`, false},
+		{"反代的错误页没有业务码", `<html><body>400 Bad Request</body></html>`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []recorded
+			server := newPanel(t, &got, func(r recorded) (int, http.Header, string) {
+				return http.StatusBadRequest, http.Header{}, tc.body
+			})
+			usePanel(t, server)
+
+			err := PostTrigger(model.Trigger{Uid: 7, Reason: "x.example"})
+
+			if err == nil {
+				t.Fatal("400 必须回错误，否则这条会被当成已入账而永久丢失")
+			}
+			if errors.Is(err, ErrRejected) != tc.want {
+				t.Fatalf("ErrRejected = %v, want %v（err: %v）", errors.Is(err, ErrRejected), tc.want, err)
+			}
+		})
+	}
+}
+
+// 5xx 与连不上都属「暂时投不出去」，绝不能被打成永久拒绝
+func TestPostKeepsServerErrorOutOfRejected(t *testing.T) {
+	var got []recorded
+	server := newPanel(t, &got, func(r recorded) (int, http.Header, string) {
+		return http.StatusServiceUnavailable, http.Header{}, `<html>gateway</html>`
+	})
+	usePanel(t, server)
+
+	if err := PostTrigger(model.Trigger{Uid: 7, Reason: "x.example"}); err == nil {
+		t.Fatal("503 要回错误")
+	} else if errors.Is(err, ErrRejected) {
+		t.Fatalf("503 不该算永久拒绝: %v", err)
 	}
 }
