@@ -3,11 +3,12 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 
@@ -202,12 +203,14 @@ func TestCutBytesKeepsUTF8(t *testing.T) {
 	}
 }
 
-// panel 起一个假面板并把 client.Host 指过去；handler 决定每次响应的状态与文本。
-// 队列自己构造（不走 newTriggerQueue），所以没有后台按拍重投的 goroutine 来抢请求数
-func panel(t *testing.T, hits *int32, handler func(n int32, w http.ResponseWriter)) *triggerQueue {
+// panel 起一个假面板、把 client.Host 指过去，返回一个没有后台 goroutine 的队列（不走 newTriggerQueue）。
+// 响应必须按请求体判、不能按请求次数判：别的用例往单例队列里留过行，那个队列的后台 goroutine
+// 也会把行投到当前这台假面板上，次数是共享的、内容不是
+func panel(t *testing.T, handler func(body string, w http.ResponseWriter)) *triggerQueue {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler(atomic.AddInt32(hits, 1), w)
+		body, _ := io.ReadAll(r.Body)
+		handler(string(body), w)
 	}))
 	t.Cleanup(server.Close)
 
@@ -218,18 +221,21 @@ func panel(t *testing.T, hits *int32, handler func(n int32, w http.ResponseWrite
 	return &triggerQueue{wake: make(chan struct{}, 1)}
 }
 
+func reject(w http.ResponseWriter, code int, msg string) {
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write([]byte(`{"status":"fail","code":` + strconv.Itoa(code) + `,"message":"` + msg + `"}`))
+}
+
 func ack(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(`{"status":"success","code":200001,"message":"操作成功"}`))
 }
 
-// 面板回 4xx 表示这条永远不可能被接受，重投也不会变：留在队首就把整条审计链钉死，
+// 面板回「参数错误」表示这条永远不可能被接受，重投也不会变：留在队首就把整条审计链钉死，
 // 必须丢掉这一条并继续把后面的发出去
 func TestTriggerQueueDropsRejectedRowAndKeepsFlowing(t *testing.T) {
-	var hits int32
-	q := panel(t, &hits, func(n int32, w http.ResponseWriter) {
-		if n == 1 {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"status":"fail","code":400200,"message":"参数错误"}`))
+	q := panel(t, func(body string, w http.ResponseWriter) {
+		if strings.Contains(body, `"reason":"rejected.example"`) {
+			reject(w, 400200, "参数错误")
 			return
 		}
 		ack(w)
@@ -242,18 +248,15 @@ func TestTriggerQueueDropsRejectedRowAndKeepsFlowing(t *testing.T) {
 	q.mu.Lock()
 	pending := len(q.pending)
 	q.mu.Unlock()
+	// 第二条只有真被面板收下才会离队，所以排空本身就证明了「丢掉一条后继续投后面的」
 	if pending != 0 {
 		t.Fatalf("被拒的队首要丢弃、后面那条要发出去，队列还剩 %d 条", pending)
-	}
-	if hits != 2 {
-		t.Fatalf("第一条被拒后要继续投第二条，实际只投了 %d 次", hits)
 	}
 }
 
 // 反面对照：传输层与面板临时故障（5xx）不能丢数据，队首要留着下一拍重试，顺序不变
 func TestTriggerQueueKeepsRowOnTransientFailure(t *testing.T) {
-	var hits int32
-	q := panel(t, &hits, func(n int32, w http.ResponseWriter) {
+	q := panel(t, func(_ string, w http.ResponseWriter) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`<html>gateway</html>`))
 	})
@@ -280,10 +283,8 @@ func TestTriggerQueueKeepsRowOnTransientFailure(t *testing.T) {
 // 面板的 HTTP 状态不区分永久与暂时：400 既用于「参数错误」（重投也不会变，该丢），
 // 也用于「写入失败」（库整笔回滚，重投就能救回来，该留）。判据只能取响应体里的业务码
 func TestTriggerQueueKeepsRowWhenPanelFailsToWrite(t *testing.T) {
-	var hits int32
-	q := panel(t, &hits, func(n int32, w http.ResponseWriter) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"status":"fail","code":400201,"message":"生成用户流量日志失败"}`))
+	q := panel(t, func(_ string, w http.ResponseWriter) {
+		reject(w, 400201, "上报用户触发审计规则日志失败")
 	})
 
 	q.push(model.Trigger{Uid: 7, Reason: "writable-later.example"})
