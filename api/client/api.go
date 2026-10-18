@@ -36,6 +36,10 @@ func loadUserListEtag() string {
 const (
 	pullAttempts = 3
 	pullBackoff  = 5 * time.Second
+
+	// panelCodeParameterError 是面板 WebApiResponse 的「参数错误」业务码（HTTP 400200 → 400）。
+	// 契约见 docs/openapi.yaml：只有这个码代表载荷永远不可能被接受
+	panelCodeParameterError = 400200
 )
 
 func init() {
@@ -48,6 +52,10 @@ func init() {
 // Host 是面板 WebAPI 的基地址；必须由 InitHost 在配置读取完之后写入
 // （包初始化时 core 里的 api_host 还是空串，且 Host() 是监听地址，不是面板地址）
 var Host = ""
+
+// ErrRejected 面板明确说这一条永远不会被接受（业务码 400200）。重投多少次结果都一样，
+// 调用方要把它和「暂时投不出去」分开：前者丢弃这一条，后者留着重试
+var ErrRejected = errors.New("panel rejected the payload")
 
 // InitHost 用配置里的 api_host 拼出 WebAPI 基地址
 func InitHost() error {
@@ -128,7 +136,13 @@ func post(url, param string) (result string, err error) {
 		return "", errors.Wrap(err, "get request error")
 	}
 	if r.StatusCode() != http.StatusOK {
-		return "", errors.New(fmt.Sprintf("get request status: %d body: %s", r.StatusCode(), string(r.Body())))
+		body := string(r.Body())
+		// HTTP 状态分不开永久与暂时：面板的 400 既用于「参数错误」（重投也不会变），也用于「写库失败」
+		// （库整笔回滚，重投就能救回来），判据只能取响应体里的业务码
+		if gjson.Get(body, "code").Int() == panelCodeParameterError {
+			return "", errors.Wrapf(ErrRejected, "panel rejected: status %d body: %s", r.StatusCode(), body)
+		}
+		return "", errors.New(fmt.Sprintf("get request status: %d body: %s", r.StatusCode(), body))
 	}
 	responseJson := stringx.BUnicodeToUtf8(r.Body())
 	return responseJson, nil

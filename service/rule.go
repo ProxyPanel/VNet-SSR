@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -240,8 +241,12 @@ func (q *triggerQueue) drain() {
 		q.mu.Unlock()
 
 		if err := client.PostTrigger(head); err != nil {
-			log.Err(err) // 留在队首，下一拍重试；顺序保持，先违的规先入账
-			return
+			if !errors.Is(err, client.ErrRejected) {
+				log.Err(err) // 留在队首，下一拍重试；顺序保持，先违的规先入账
+				return
+			}
+			// 面板判定这条载荷永远不会接受：留在队首就是把整条审计链钉死，丢这一条并继续投后面的
+			log.Error("trigger rejected by panel, dropped (uid %d, reason %s): %s", head.Uid, head.Reason, err.Error())
 		}
 
 		q.mu.Lock()

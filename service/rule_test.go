@@ -3,11 +3,15 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/ProxyPanel/VNet-SSR/api/client"
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/ProxyPanel/VNet-SSR/model"
 )
@@ -195,5 +199,100 @@ func TestCutBytesKeepsUTF8(t *testing.T) {
 	}
 	if cutBytes("short", 255) != "short" {
 		t.Fatal("未超限不该改动")
+	}
+}
+
+// panel 起一个假面板并把 client.Host 指过去；handler 决定每次响应的状态与文本。
+// 队列自己构造（不走 newTriggerQueue），所以没有后台按拍重投的 goroutine 来抢请求数
+func panel(t *testing.T, hits *int32, handler func(n int32, w http.ResponseWriter)) *triggerQueue {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler(atomic.AddInt32(hits, 1), w)
+	}))
+	t.Cleanup(server.Close)
+
+	prev := client.Host
+	client.Host = server.URL + "/api/ssr/v1"
+	t.Cleanup(func() { client.Host = prev })
+
+	return &triggerQueue{wake: make(chan struct{}, 1)}
+}
+
+func ack(w http.ResponseWriter) {
+	_, _ = w.Write([]byte(`{"status":"success","code":200001,"message":"操作成功"}`))
+}
+
+// 面板回 4xx 表示这条永远不可能被接受，重投也不会变：留在队首就把整条审计链钉死，
+// 必须丢掉这一条并继续把后面的发出去
+func TestTriggerQueueDropsRejectedRowAndKeepsFlowing(t *testing.T) {
+	var hits int32
+	q := panel(t, &hits, func(n int32, w http.ResponseWriter) {
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"status":"fail","code":400200,"message":"参数错误"}`))
+			return
+		}
+		ack(w)
+	})
+
+	q.push(model.Trigger{Uid: 7, Reason: "rejected.example"})
+	q.push(model.Trigger{Uid: 7, Reason: "keep.example"})
+	q.drain()
+
+	q.mu.Lock()
+	pending := len(q.pending)
+	q.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("被拒的队首要丢弃、后面那条要发出去，队列还剩 %d 条", pending)
+	}
+	if hits != 2 {
+		t.Fatalf("第一条被拒后要继续投第二条，实际只投了 %d 次", hits)
+	}
+}
+
+// 反面对照：传输层与面板临时故障（5xx）不能丢数据，队首要留着下一拍重试，顺序不变
+func TestTriggerQueueKeepsRowOnTransientFailure(t *testing.T) {
+	var hits int32
+	q := panel(t, &hits, func(n int32, w http.ResponseWriter) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`<html>gateway</html>`))
+	})
+
+	q.push(model.Trigger{Uid: 7, Reason: "first.example"})
+	q.push(model.Trigger{Uid: 8, Reason: "second.example"})
+	q.drain()
+
+	q.mu.Lock()
+	pending := len(q.pending)
+	reason := ""
+	if pending > 0 {
+		reason = q.pending[0].Reason
+	}
+	q.mu.Unlock()
+	if pending != 2 {
+		t.Fatalf("503 属临时故障，两条都要留在队列里等重投，当前剩 %d 条", pending)
+	}
+	if reason != "first.example" {
+		t.Fatalf("队首必须是先违的规，当前队首 %s", reason)
+	}
+}
+
+// 面板的 HTTP 状态不区分永久与暂时：400 既用于「参数错误」（重投也不会变，该丢），
+// 也用于「写入失败」（库整笔回滚，重投就能救回来，该留）。判据只能取响应体里的业务码
+func TestTriggerQueueKeepsRowWhenPanelFailsToWrite(t *testing.T) {
+	var hits int32
+	q := panel(t, &hits, func(n int32, w http.ResponseWriter) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"status":"fail","code":400201,"message":"生成用户流量日志失败"}`))
+	})
+
+	q.push(model.Trigger{Uid: 7, Reason: "writable-later.example"})
+	q.drain()
+
+	q.mu.Lock()
+	pending := len(q.pending)
+	q.mu.Unlock()
+	if pending != 1 {
+		t.Fatalf("400201 是写库失败，属暂时故障，这条要留着重投；当前队列剩 %d 条", pending)
 	}
 }
