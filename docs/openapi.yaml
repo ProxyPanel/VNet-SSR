@@ -97,8 +97,9 @@ paths:
         失效 uid 会被跳过并记日志，不影响同批其他账号。本后端在发送失败时把**整批**留在待发队列，
         下一轮原样重发，绝不因发送失败丢账。
         重投会带来重复累加的窗口（面板已入账但响应丢失），所以每批带一个 `report_id`：
-        同一批内各行相同，重发不变，新批次换新值。面板按 `(node_id, report_id, uid)` 去重即闭环；
-        未去重前该字段只是一个被忽略的多余键，不影响现有实现。
+        同一批内各行相同，重发不变，新批次换新值。面板按 `(node_id, report_id)` **整批**认领即闭环
+        （这批的写入是单事务全有或全无，「记了一半」的中间态不存在，所以不必按 uid 逐个认领）；
+        未认领前该字段只是一个被忽略的多余键，不影响现有实现。
       operationId: reportUserTraffic
       parameters:
         - $ref: '#/components/parameters/NodePathId'
@@ -192,6 +193,8 @@ paths:
         target/sniff_* 字段带完整现场（去向、嗅出的协议/域名/路径），面板落进 rule_log 独立列。
         节点侧排队重投（at-least-once，面板不可达时不丢）；面板按 (node,uid,rule,reason) 冷却窗口去重
         （sysConfig `rule_log_cooldown` 分钟，默认 30），窗口内的重复上报只 ack 不二次落档。
+        只有业务码 400200（参数错误）算「这条载荷永远不会被接受」，队列丢掉这一条并继续投后面的；
+        HTTP 状态分不开永久与暂时（写库失败同样回 400），所以判据只取响应体的 `code`。
       operationId: reportTrigger
       parameters:
         - $ref: '#/components/parameters/NodePathId'
@@ -549,7 +552,7 @@ components:
           description: 面板不消费
         report_id:
           type: string
-          description: 同一批增量的批次号，重发不变；面板据此对 (node_id, report_id, uid) 去重
+          description: 同一批增量的批次号，重发不变；面板据此整批认领 (node_id, report_id)
     NodeOnline:
       type: object
       required: [uid, ip]
@@ -559,6 +562,9 @@ components:
         ip:
           type: string
           description: 客户端出口地址；同轮多个用逗号拼接
+        report_id:
+          type: string
+          description: 同一批在线记录的批次号，重投不变；面板据此整批认领 (node_id, report_id)，否则响应丢失的那一批会被再插一遍在线行
     NodeStatus:
       type: object
       required: [cpu, mem, disk, uptime]
