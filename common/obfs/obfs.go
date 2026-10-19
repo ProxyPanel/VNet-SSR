@@ -1,9 +1,8 @@
 package obfs
 
 import (
+	"fmt"
 	"sort"
-
-	"github.com/pkg/errors"
 )
 
 type PlainFactory func(string) (Plain, error)
@@ -71,7 +70,7 @@ func GetObfs(method string) (Plain, error) {
 	factory, exist := method_supported[method]
 	if !exist { // 直接调用取不到的工厂是 nil 调用：会在每条连接里 panic，被连接级 recover 吞成一行日志，
 		// 面板只看到心跳正常、在线为 0，节点侧却已经全线连不上
-		return nil, errors.Errorf("unsupported protocol or obfs: %s", method)
+		return nil, fmt.Errorf("unsupported protocol or obfs: %s", method)
 	}
 
 	return factory(method)

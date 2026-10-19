@@ -1,8 +1,8 @@
 package addrx
 
 import (
+	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/utils/langx"
-	"github.com/pkg/errors"
 	"io"
 	"net"
 	"net/http"
@@ -64,22 +64,22 @@ func GetPublicIp(url string) (string, error) {
 
 	res, err := client.Get(url)
 	if err != nil {
-		return "", errors.Wrap(err, "public ip request error")
+		return "", fmt.Errorf("%s: %w", "public ip request error", err)
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return "", errors.Errorf("public ip status: %d", res.StatusCode)
+		return "", fmt.Errorf("public ip status: %d", res.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(res.Body, 128))
 	if err != nil {
-		return "", errors.Wrap(err, "read public ip error")
+		return "", fmt.Errorf("%s: %w", "read public ip error", err)
 	}
 
 	ip := strings.TrimSpace(string(body))
 	if parsed := net.ParseIP(ip); parsed == nil {
-		return "", errors.Errorf("public ip is not an address: %q", ip)
+		return "", fmt.Errorf("public ip is not an address: %q", ip)
 	}
 
 	return ip, nil

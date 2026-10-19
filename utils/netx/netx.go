@@ -1,12 +1,12 @@
 package netx
 
 import (
+	"errors"
 	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/common/log"
 	"github.com/ProxyPanel/VNet-SSR/common/network"
 	"github.com/ProxyPanel/VNet-SSR/common/pool"
 	"github.com/ProxyPanel/VNet-SSR/utils/goroutine"
-	"github.com/pkg/errors"
 	"io"
 	"os"
 	"strings"
@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-func Copy(dst,src network.IRequest) (written int64, err error){
+func Copy(dst, src network.IRequest) (written int64, err error) {
 	buf := pool.GetBuf()
 	for {
 		nr, er := src.Read(buf)
@@ -41,6 +41,7 @@ func Copy(dst,src network.IRequest) (written int64, err error){
 	pool.PutBuf(buf)
 	return written, err
 }
+
 // DuplexCopyTcp will return 3 result
 // up means left connection to right connection transfer data count
 // down means right connection to left connections transfer data count
@@ -79,7 +80,7 @@ func DuplexCopyTcp(left, right network.IRequest) (up, down int64, err error) {
 		recordCopyEnd(dirDown, classifyCopyErr(err),
 			fmt.Sprintf("netx copy %s -> %s req=%s : %s", right.RemoteAddr(), left.RemoteAddr(), right.GetRequestId(), err))
 	}
-	return up, rs.N, errors.Cause(err)
+	return up, rs.N, err
 }
 
 // 连接结束原因的计数维度。DuplexCopyTcp 在一个方向收口后会主动把两侧 deadline 设到过去叫醒另一个方向，
@@ -111,7 +112,7 @@ var (
 
 	// 会话身份与账号一一对应，所以集合大小就是本分钟建立过转发的活跃账号数
 	// （摘要里的字段名保留 active_uids，它是给运维看的"活跃账号数"）
-	activeMu       sync.Mutex
+	activeMu         sync.Mutex
 	activeIdentities = map[int]struct{}{}
 )
 

@@ -1,0 +1,4 @@
+# 文本一律 LF 入库与检出：release/*.sh 经 raw.githubusercontent 原样下发，多一个 \r 就跑不动
+* text=auto eol=lf
+*.zip binary
+*.exe binary

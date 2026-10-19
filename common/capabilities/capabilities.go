@@ -4,6 +4,8 @@ package capabilities
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -11,7 +13,6 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/common/ciphers/block"
 	"github.com/ProxyPanel/VNet-SSR/common/ciphers/stream"
 	"github.com/ProxyPanel/VNet-SSR/common/obfs"
-	"github.com/pkg/errors"
 )
 
 // 节点侧协议与混淆共用一张注册表，SSR 的语义分组靠这两份名单区分：
@@ -81,7 +82,7 @@ func Current() (List, error) {
 
 	// 分组名单之外的注册名必须报错，否则新增的协议/混淆不会出现在 capabilities.json 里
 	if extra := ungrouped(l.Protocols, l.Obfs, registered); len(extra) > 0 {
-		return l, errors.Errorf("registry names not classified as protocol or obfs: %s", strings.Join(extra, ", "))
+		return l, fmt.Errorf("registry names not classified as protocol or obfs: %s", strings.Join(extra, ", "))
 	}
 
 	sort.Strings(l.Methods)

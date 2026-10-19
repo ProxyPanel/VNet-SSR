@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/api/client"
 	"github.com/ProxyPanel/VNet-SSR/common/log"
@@ -18,7 +19,6 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/utils/monitor"
 	"github.com/ProxyPanel/VNet-SSR/utils/netx"
 	"github.com/dustin/go-humanize"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -388,7 +388,7 @@ func (s *SSRManager) addUser(user *model.UserInfo) error {
 			nodeInfo.Single,
 			&server.ShadowsocksRArgs{})
 		if err := server.Start(); err != nil {
-			return errors.Wrap(err, "add user error")
+			return fmt.Errorf("%s: %w", "add user error", err)
 		}
 	}
 	s.userTable[user.Uid] = user
@@ -418,10 +418,10 @@ func (s *SSRManager) editUserReturn(user *model.UserInfo) (before *model.UserInf
 		return nil, errors.New(fmt.Sprintf("port %v used by user %v", user.Port, s.identityIndex[user.Port]))
 	}
 	if _, err := s.delUserReturl(user.Uid); err != nil {
-		return nil, errors.Wrap(err, "edit user del user error")
+		return nil, fmt.Errorf("%s: %w", "edit user del user error", err)
 	}
 	if err := s.addUser(user); err != nil {
-		return nil, errors.Wrap(err, "edit user add user error")
+		return nil, fmt.Errorf("%s: %w", "edit user add user error", err)
 	}
 	return before, nil
 }
@@ -568,7 +568,7 @@ func (s *SSRManager) Start() error {
 	// load users
 	users, err := client.GetUserList()
 	if err != nil {
-		return errors.Wrap(err, "get user list error")
+		return fmt.Errorf("%s: %w", "get user list error", err)
 	}
 
 	return s.startWith(users)

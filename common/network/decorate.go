@@ -3,13 +3,13 @@ package network
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/common"
 	"github.com/ProxyPanel/VNet-SSR/common/ciphers"
 	"github.com/ProxyPanel/VNet-SSR/common/obfs"
 	"github.com/ProxyPanel/VNet-SSR/utils/addrx"
 	"github.com/ProxyPanel/VNet-SSR/utils/binaryx"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"net"
 	"strings"
@@ -77,7 +77,7 @@ type ShadowsocksRDecorate struct {
 	// 本会话的线上身份编号（与账号一一对应），两种模式下都是端口：多端口 = 监听端口，
 	// 单端口 = auth 包头 4 字节里的账号编号；
 	// TrafficReport/OnlineReport/限速都拿它反查账号
-	Identity        int
+	Identity      int
 	obfs          obfs.Plain
 	protocol      obfs.Plain
 	encryptor     *ciphers.Encryptor
@@ -160,7 +160,7 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 		}
 		n, err = ssrd.Conn.Write(result)
 		if err != nil {
-			return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate obfs sendback error.", ssrd.RequestID))
+			return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate obfs sendback error.", ssrd.RequestID), err)
 		}
 		atomic.AddInt64(&ssrd.download, int64(n))
 		return ssrd.Read(buf)
@@ -183,7 +183,7 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 		}
 
 		if err != nil {
-			return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate obfs decrypt error.", ssrd.RequestID))
+			return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate obfs decrypt error.", ssrd.RequestID), err)
 		}
 		data = cleartext
 	} else {
@@ -199,7 +199,7 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 		}).Debug("ShadowsocksRDecorate protocol ServerPostDecrypt")
 	}
 	if err != nil {
-		return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate protocol post decrypt error.", ssrd.RequestID))
+		return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate protocol post decrypt error.", ssrd.RequestID), err)
 	}
 	if sendback {
 		backdata, err := ssrd.protocol.ServerPreEncrypt([]byte{})
@@ -211,11 +211,11 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 			}).Debug("shadowoscksr Read ServerPreEncrypt")
 		}
 		if err != nil {
-			return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate protocol pre encode error.", ssrd.RequestID))
+			return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate protocol pre encode error.", ssrd.RequestID), err)
 		}
 		backdata, err = ssrd.encryptor.Encrypt(backdata)
 		if err != nil {
-			return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate encrypter encrypt error.", ssrd.RequestID))
+			return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate encrypter encrypt error.", ssrd.RequestID), err)
 		}
 		if logrus.GetLevel() == logrus.DebugLevel {
 			logrus.WithFields(logrus.Fields{
@@ -225,7 +225,7 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 		}
 		backdata, err = ssrd.obfs.ServerEncode(backdata)
 		if err != nil {
-			return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate obfs service encode error.", ssrd.RequestID))
+			return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate obfs service encode error.", ssrd.RequestID), err)
 		}
 		if logrus.GetLevel() == logrus.DebugLevel {
 			logrus.WithFields(logrus.Fields{
@@ -235,7 +235,7 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 		}
 		n, err = ssrd.Conn.Write(backdata)
 		if err != nil {
-			return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate obfs sendback error.", ssrd.RequestID))
+			return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate obfs sendback error.", ssrd.RequestID), err)
 		}
 		atomic.AddInt64(&ssrd.download, int64(n))
 	}
@@ -264,15 +264,15 @@ func (ssrd *ShadowsocksRDecorate) Write(buf []byte) (n int, err error) {
 
 	data, err := ssrd.protocol.ServerPreEncrypt(buf)
 	if err != nil {
-		return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate protocol service encode error.", ssrd.RequestID))
+		return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate protocol service encode error.", ssrd.RequestID), err)
 	}
 	data, err = ssrd.encryptor.Encrypt(data)
 	if err != nil {
-		return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate encryptor encrypt error.", ssrd.RequestID))
+		return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate encryptor encrypt error.", ssrd.RequestID), err)
 	}
 	data, err = ssrd.obfs.ServerEncode(data)
 	if err != nil {
-		return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate obfs service encode error.", ssrd.RequestID))
+		return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate obfs service encode error.", ssrd.RequestID), err)
 	}
 	n, err = ssrd.Conn.Write(data)
 	if err != nil {

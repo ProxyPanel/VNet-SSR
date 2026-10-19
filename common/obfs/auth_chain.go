@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/ProxyPanel/VNet-SSR/utils/langx"
 	"math"
@@ -15,7 +16,6 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/common/ciphers"
 	"github.com/ProxyPanel/VNet-SSR/utils/bytesx"
 	"github.com/ProxyPanel/VNet-SSR/utils/randomx"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ProxyPanel/VNet-SSR/common/log"
@@ -324,7 +324,7 @@ func (a *AuthChainA) ClientPostDecrypt(buf []byte) (result []byte, err error) {
 		if length > 4096 {
 			a.RawTrans = true
 			a.RecvBuf = []byte{}
-			return nil, errors.WithStack(errors.New("client_post_decrypt data error"))
+			return nil, errors.New("client_post_decrypt data error")
 		}
 
 		if length+4 > len(a.RecvBuf) {
@@ -336,7 +336,7 @@ func (a *AuthChainA) ClientPostDecrypt(buf []byte) (result []byte, err error) {
 			log.Info("%s checksum error, data: %s", a.NoCompatibleMethod, hex.EncodeToString(a.RecvBuf[:length]))
 			a.RawTrans = true
 			a.RecvBuf = []byte{}
-			return nil, errors.WithStack(errors.New("client_post_decrypt data uncorrect checksum"))
+			return nil, errors.New("client_post_decrypt data uncorrect checksum")
 		}
 
 		pos := 2
@@ -521,7 +521,7 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 				log.Info("%s: over size ", a.NoCompatibleMethod)
 				return bytes.Repeat([]byte{byte('E')}, 2048), false, nil
 			} else {
-				return nil, false, errors.WithStack(errors.New("server_post_decrype data error"))
+				return nil, false, errors.New("server_post_decrype data error")
 			}
 		}
 		if length+4 > len(a.RecvBuf) {
@@ -536,7 +536,7 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 			if a.RecvID == 1 {
 				return bytes.Repeat([]byte{byte('E')}, 2048), false, nil
 			} else {
-				return nil, false, errors.WithStack(errors.New("server_post_decrype data uncorrect checksum"))
+				return nil, false, errors.New("server_post_decrype data uncorrect checksum")
 			}
 		}
 		a.RecvID++

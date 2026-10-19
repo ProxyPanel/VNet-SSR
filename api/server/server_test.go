@@ -14,7 +14,7 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/model"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
-	"gopkg.in/resty.v1"
+	"github.com/go-resty/resty/v2"
 )
 
 const testPushSecret = "test-push-secret"

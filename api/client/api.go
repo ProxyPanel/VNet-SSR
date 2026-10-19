@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"net/http"
@@ -13,10 +14,9 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/model"
 	"github.com/ProxyPanel/VNet-SSR/utils/langx"
 	"github.com/ProxyPanel/VNet-SSR/utils/stringx"
-	"github.com/pkg/errors"
+	"github.com/go-resty/resty/v2"
 	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
-	"gopkg.in/resty.v1"
 )
 
 var (
@@ -109,7 +109,7 @@ func getWithEtag(url string, etag string) (body string, changed bool, newEtag st
 
 	r, err := restyc.R().SetHeaders(header).Get(url)
 	if err != nil {
-		return "", false, "", errors.Wrap(err, "get request error")
+		return "", false, "", fmt.Errorf("%s: %w", "get request error", err)
 	}
 	if r.StatusCode() == http.StatusNotModified { // 内容未变：不是失败，不要按错误重投
 		return "", false, "", nil
@@ -133,14 +133,14 @@ func post(url, param string) (result string, err error) {
 	}
 	r, err := restyc.R().SetHeaders(header).SetBody(param).Post(url)
 	if err != nil {
-		return "", errors.Wrap(err, "get request error")
+		return "", fmt.Errorf("%s: %w", "get request error", err)
 	}
 	if r.StatusCode() != http.StatusOK {
 		body := string(r.Body())
 		// HTTP 状态分不开永久与暂时：面板的 400 既用于「参数错误」（重投也不会变），也用于「写库失败」
 		// （库整笔回滚，重投就能救回来），判据只能取响应体里的业务码
 		if gjson.Get(body, "code").Int() == panelCodeParameterError {
-			return "", errors.Wrapf(ErrRejected, "panel rejected: status %d body: %s", r.StatusCode(), body)
+			return "", fmt.Errorf("panel rejected: status %d body: %s: %w", r.StatusCode(), body, ErrRejected)
 		}
 		return "", errors.New(fmt.Sprintf("get request status: %d body: %s", r.StatusCode(), body))
 	}

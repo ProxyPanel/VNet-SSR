@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/cipher"
 	"crypto/rand"
+	"errors"
 	"github.com/ProxyPanel/VNet-SSR/common/ciphers/block"
 	"github.com/ProxyPanel/VNet-SSR/utils/bytesx"
 	"github.com/sirupsen/logrus"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/ProxyPanel/VNet-SSR/common/ciphers/aead"
 	"github.com/ProxyPanel/VNet-SSR/common/ciphers/stream"
-	"github.com/pkg/errors"
 )
 
 const AEAD_MAX_SEGMENT_LENGTH = 0x3FFF
@@ -103,12 +103,12 @@ func NewCipher(op int, method string, key, iv []byte) (*SSCipher, error) {
 			OP:        op,
 		}, nil
 	}
-	return nil, errors.WithStack(errors.New("unreachable code"))
+	return nil, errors.New("unreachable code")
 }
 
 func (s *SSCipher) Encrypt(src []byte) (result []byte, err error) {
 	if s.OP != OP_ENCRYPT {
-		return nil, errors.WithStack(errors.New("operation not support."))
+		return nil, errors.New("operation not support.")
 	}
 	if s.Stream != nil {
 		dst := make([]byte, len(src))
@@ -160,12 +160,12 @@ func (s *SSCipher) Encrypt(src []byte) (result []byte, err error) {
 		s.BlockMode.CryptBlocks(dst, aligned)
 		return dst, nil
 	}
-	return nil, errors.WithStack(errors.New("unreachable code"))
+	return nil, errors.New("unreachable code")
 }
 
 func (s *SSCipher) Decrypt(ciphertext []byte) (result []byte, err error) {
 	if s.OP != OP_DECRYPT {
-		return nil, errors.WithStack(errors.New("operation not support."))
+		return nil, errors.New("operation not support.")
 	}
 	if s.Stream != nil {
 		buf := make([]byte, len(ciphertext))
@@ -232,7 +232,7 @@ func (s *SSCipher) Decrypt(ciphertext []byte) (result []byte, err error) {
 		s.BlockMode.CryptBlocks(dst, aligned)
 		return dst, nil
 	}
-	return nil, errors.WithStack(errors.New("unknow ciphers"))
+	return nil, errors.New("unknow ciphers")
 }
 
 type Encryptor struct {

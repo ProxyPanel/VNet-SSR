@@ -14,10 +14,8 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/utils/netx"
 	"github.com/ProxyPanel/VNet-SSR/utils/sniff"
 	"github.com/ProxyPanel/VNet-SSR/utils/socksproxy"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"runtime/debug"
@@ -298,7 +296,7 @@ func (ssr *ShadowsocksRProxy) writeRejectResponse(ssrd *network.ShadowsocksRDeco
 		resp.StatusCode = http.StatusForbidden
 		resp.Status = "403 Forbidden"
 		resp.Header.Set("Content-Type", "text/plain; charset=utf-8")
-		resp.Body = ioutil.NopCloser(bytes.NewBufferString(body))
+		resp.Body = io.NopCloser(bytes.NewBufferString(body))
 		resp.ContentLength = int64(len(body))
 	}
 	_ = resp.Write(ssrd)
@@ -410,7 +408,7 @@ func ShadowsocksRMapTimeCopy(dst *network.ShadowsocksRDecorate, target net.Addr,
 		_ = src.SetReadDeadline(time.Now().Add(timeout * time.Second))
 		n, raddr, err := src.ReadFrom(buf)
 		if err != nil {
-			return errors.Cause(err)
+			return err
 		}
 
 		srcAddr := socksproxy.ParseAddr(raddr.String())
@@ -420,7 +418,7 @@ func ShadowsocksRMapTimeCopy(dst *network.ShadowsocksRDecorate, target net.Addr,
 		err = dst.WriteTo(buf[:len(srcAddrByte)+n], src.Uid, target)
 
 		if err != nil {
-			return errors.Cause(err)
+			return err
 		}
 	}
 }

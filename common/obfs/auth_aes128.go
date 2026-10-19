@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"hash"
@@ -22,7 +23,6 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/utils/binaryx"
 	"github.com/ProxyPanel/VNet-SSR/utils/bytesx"
 	"github.com/ProxyPanel/VNet-SSR/utils/randomx"
-	"github.com/pkg/errors"
 )
 
 func init() {

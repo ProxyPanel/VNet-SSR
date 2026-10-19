@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"github.com/sirupsen/logrus"
 	"math"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/pkg/errors"
 
 	"github.com/ProxyPanel/VNet-SSR/common/cache"
 	"github.com/ProxyPanel/VNet-SSR/common/log"

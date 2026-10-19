@@ -10,8 +10,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       # 部署脚本没有任何测试覆盖，语法错是最便宜的闸门；它们经 raw.githubusercontent 直接下发，坏一次就影响所有新装
@@ -23,13 +23,13 @@ jobs:
   race:
     runs-on: ubuntu-latest
     needs: check
-    # 并发判据在这个仓里是显式写下的（用户表读写锁、atomic.Value 存取 ETag 与 push secret、
-    # 32 位目标上必须落在结构体首地址的 int64 计数器），而此前没有任何 race 闸门。
-    # 开发机是 Windows 且没有 C 编译器（go test -race 直接报 requires cgo），只能在 linux 上验；
-    # 冷缓存的普通跑法约 22 秒，race 版按几倍开销给 300 秒。
+    # 并发判据在这个仓里是显式写下的：用户表读写锁、atomic.Value 存取 ETag 与 push secret、
+    # 32 位目标上必须落在结构体首地址的 int64 计数器。开发机是 Windows 且没有 C 编译器
+    # （go test -race 直接报 requires cgo），只能在 linux 上验；冷缓存的普通跑法约 22 秒，
+    # race 版按几倍开销给 300 秒。
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - run: go test -race -timeout 300s ./...
@@ -39,20 +39,20 @@ jobs:
     # race 是发布链的一环：数据竞争要跑对了才暴露，带着它出包等于把偶发崩溃发给所有节点
     needs: [check, race]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - run: make
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vnet-cross-build
           path: bin/*
           if-no-files-found: error
 
   release:
-    # 打 tag 才发布：部署脚本取的是 releases/download/<TAG>/vnet-linux-<VDIS>.zip，
-    # 只有 v2.1.0（2020 年的上游包）的话，新装节点装到的就不是这个仓的代码
+    # 打 tag 才发布：装机脚本取的是 releases/download/<TAG>/vnet-linux-<VDIS>.zip，
+    # 只有 CI 在 tag 上跑出来的包才是这条地址能找到的
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # race 也挡发布：数据竞争要跑对了才出包，否则红着的竞争会随包发给所有节点
@@ -60,8 +60,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - run: make package VERSION="${GITHUB_REF_NAME}"
@@ -75,8 +75,8 @@ jobs:
     # 只报告，不阻断：待本机/镜像跟上新版 Go 之后再改成必需步骤
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest

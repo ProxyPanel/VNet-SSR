@@ -4,12 +4,11 @@ package socksproxy
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strconv"
-
-	"github.com/pkg/errors"
 )
 
 // UDPEnabled is the toggle for UDP support
@@ -111,7 +110,7 @@ func (ss *Socks5Addr) GetRaw() (raw []byte, err error) {
 	for _, v := range data {
 		err := binary.Write(buf, binary.BigEndian, v)
 		if err != nil {
-			return nil, errors.Wrap(errors.WithStack(err), "GetRaw is errors")
+			return nil, fmt.Errorf("%s: %w", "GetRaw is errors", err)
 		}
 	}
 	raw = make([]byte, buf.Len())
@@ -146,10 +145,10 @@ func (s *Socks5Addr) process() {
 		s.Address = string(s.Raw[2 : 2+int(s.Raw[1])])
 		s.Port = (int(s.Raw[2+int(s.Raw[1])]) << 8) | int(s.Raw[2+int(s.Raw[1])+1])
 	case AtypIPv4:
-		s.Address = net.IP(s.Raw[1:1+net.IPv4len]).String()
+		s.Address = net.IP(s.Raw[1 : 1+net.IPv4len]).String()
 		s.Port = (int(s.Raw[1+net.IPv4len]) << 8) | int(s.Raw[1+net.IPv4len+1])
 	case AtypIPv6:
-		s.Address = net.IP(s.Raw[1:1+net.IPv6len]).String()
+		s.Address = net.IP(s.Raw[1 : 1+net.IPv6len]).String()
 		s.Port = (int(s.Raw[1+net.IPv6len]) << 8) | int(s.Raw[1+net.IPv6len+1])
 	}
 }

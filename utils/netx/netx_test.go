@@ -1,13 +1,14 @@
 package netx
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"syscall"
 	"testing"
 
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -26,7 +27,7 @@ func TestClassifyCopyErr(t *testing.T) {
 		want int
 	}{
 		{"eof", io.EOF, kindEOF},
-		{"包装过的 eof", errors.Wrap(io.EOF, "read tcp"), kindEOF},
+		{"包装过的 eof", fmt.Errorf("%s: %w", "read tcp", io.EOF), kindEOF},
 		{"unexpected eof", io.ErrUnexpectedEOF, kindUnexpectedEOF},
 		{"同伴收口叫醒的读超时", os.ErrDeadlineExceeded, kindPeerClosed},
 		{"OpError 包裹的读超时", opDeadline, kindPeerClosed},

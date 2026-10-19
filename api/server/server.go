@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/api/client"
 	"github.com/ProxyPanel/VNet-SSR/common/ciphers/block"
@@ -15,8 +16,7 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/utils/goroutine"
 	"github.com/ProxyPanel/VNet-SSR/utils/langx"
 	"github.com/gin-gonic/gin"
-	"github.com/pkg/errors"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -75,15 +75,13 @@ func ValidateNodeInfo(nodeInfo *model.NodeInfo) error {
 		return ErrEmptySecret
 	}
 	if nodeInfo.Single == 1 && !obfs.CarriesIdentity(nodeInfo.Protocol) {
-		return errors.Errorf("single port mode needs a protocol that carries the account identity, %q carries none; usable: %s",
-			nodeInfo.Protocol, strings.Join(obfs.IdentityBearingNames(), ", "))
+		return fmt.Errorf("single port mode needs a protocol that carries the account identity, %q carries none; usable: %s", nodeInfo.Protocol, strings.Join(obfs.IdentityBearingNames(), ", "))
 	}
 	// 分组模式没有字节粒度的语义：TCP 字节流可以按块边界走（尾巴等下一批），但每个 UDP 数据报
 	// 都是自带 IV 的一次性加解密，没有下一批可等，不足一块的尾巴只能丢。
 	// 与其让数据报静默截尾，不如把这种组合拒在落地之前
 	if nodeInfo.IsUDP == 1 && block.GetBlockCipher(nodeInfo.Method) != nil {
-		return errors.Errorf("%s is a block cipher and cannot carry UDP datagrams; pick a stream cipher or set is_udp to 0",
-			nodeInfo.Method)
+		return fmt.Errorf("%s is a block cipher and cannot carry UDP datagrams; pick a stream cipher or set is_udp to 0", nodeInfo.Method)
 	}
 	return nil
 }
@@ -108,8 +106,8 @@ func secretCheck() gin.HandlerFunc {
 
 func detailLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		body, _ := ioutil.ReadAll(c.Request.Body)
-		c.Request.Body = ioutil.NopCloser(bytes.NewBuffer(body))
+		body, _ := io.ReadAll(c.Request.Body)
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
 		// body 里有 passwd 与 secret，默认级别只留方法+路径
 		log.Info("%s,%s", c.Request.Method, c.Request.RequestURI)
 		log.Debug("%s,%s,%s", c.Request.Method, c.Request.RequestURI, body)
@@ -183,7 +181,7 @@ func InitRouter() *gin.Engine {
 // 面板队列按作业的 $tries 重试
 func RuleReload(c *gin.Context) {
 	if err := service.GetRuleService().LoadFromApi(); err != nil {
-		fail(c, errors.Wrap(err, "reload rule failed, old rule set kept"))
+		fail(c, fmt.Errorf("%s: %w", "reload rule failed, old rule set kept", err))
 		return
 	}
 	success(c)
@@ -273,7 +271,7 @@ func NodeReload(c *gin.Context) {
 	// 先把新集合取到手再改配置：面板此刻不可达时保持原样，不把已经在跑的服务打空
 	users, err := client.GetUserList()
 	if err != nil {
-		fail(c, errors.Wrap(err, "get user list failed, current services kept"))
+		fail(c, fmt.Errorf("%s: %w", "get user list failed, current services kept", err))
 		return
 	}
 	core.GetApp().SetNodeInfo(&nodeInfo)

@@ -3,6 +3,7 @@ package obfs
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"hash/adler32"
 	"hash/crc32"
 	"math"
@@ -13,7 +14,6 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/utils/binaryx"
 	"github.com/ProxyPanel/VNet-SSR/utils/bytesx"
 	"github.com/ProxyPanel/VNet-SSR/utils/randomx"
-	"github.com/pkg/errors"
 )
 
 func init() {
