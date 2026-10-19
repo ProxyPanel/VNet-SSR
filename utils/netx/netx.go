@@ -110,26 +110,27 @@ var (
 	// 真异常每分钟只留一条样本行，既保住告警价值又不让它淹没日志
 	copySampled [kindCount]bool
 
-	// 会话身份与账号一一对应，所以集合大小就是本分钟建立过转发的活跃账号数
+	// 会话账号编号与账号一一对应（多端口下是监听端口、单端口下是面板 uid），
+	// 所以集合大小就是本分钟建立过转发的活跃账号数
 	// （摘要里的字段名保留 active_uids，它是给运维看的"活跃账号数"）
-	activeMu         sync.Mutex
-	activeIdentities = map[int]struct{}{}
+	activeMu       sync.Mutex
+	activeAccounts = map[int]struct{}{}
 )
 
-type sessionIdentity interface{ GetIdentity() int }
+type sessionAccount interface{ GetAccount() int }
 
-func markActiveIdentity(identity int) {
-	if identity == 0 {
+func markActiveAccount(account int) {
+	if account == 0 {
 		return
 	}
 	activeMu.Lock()
-	activeIdentities[identity] = struct{}{}
+	activeAccounts[account] = struct{}{}
 	activeMu.Unlock()
 }
 
 func recordActive(r network.IRequest) {
-	if u, ok := r.(sessionIdentity); ok {
-		markActiveIdentity(u.GetIdentity())
+	if a, ok := r.(sessionAccount); ok {
+		markActiveAccount(a.GetAccount())
 	}
 }
 
@@ -178,8 +179,8 @@ func CopyEndSummary() string {
 	defer copyStatsMu.Unlock()
 
 	activeMu.Lock()
-	active := len(activeIdentities)
-	activeIdentities = map[int]struct{}{}
+	active := len(activeAccounts)
+	activeAccounts = map[int]struct{}{}
 	activeMu.Unlock()
 
 	var total int64

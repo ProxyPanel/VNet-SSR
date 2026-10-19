@@ -57,6 +57,38 @@ func TestDecorateIdentityFollowsPortMode(t *testing.T) {
 	}
 }
 
+// 活跃账号数的键按模式取：多端口是监听端口，单端口是 auth 包认出账号后反查出的面板 uid，
+// 但记账入参在两种模式下都还是端口
+func TestDecorateAccountKeyFollowsPortMode(t *testing.T) {
+	records := &countingReport{uidOf: map[int]int{8388: 4242}}
+
+	multi, err := newDecorateWith(t, "plain", "aes-256-cfb", "origin", 0, 8388)
+	if err != nil {
+		t.Fatalf("多端口装饰器构造失败: %s", err.Error())
+	}
+	multi.TrafficReport = records
+	if multi.GetAccount() != 8388 {
+		t.Fatalf("多端口活跃键 = %d, want 监听端口 8388", multi.GetAccount())
+	}
+
+	single, err := newDecorateWith(t, "plain", "aes-256-cfb", "origin", 1, 8388)
+	if err != nil {
+		t.Fatalf("单端口装饰器构造失败: %s", err.Error())
+	}
+	single.TrafficReport = records
+	if single.GetAccount() != 0 {
+		t.Fatalf("单端口解出 auth 包之前不该计入活跃账号, got %d", single.GetAccount())
+	}
+
+	single.UpdateUser(binaryx.LEUint32ToBytes(8388))
+	if single.GetIdentity() != 8388 {
+		t.Fatalf("单端口线上身份 = %d, want 端口 8388（TrafficReport 的入参不能换成 uid）", single.GetIdentity())
+	}
+	if single.GetAccount() != 4242 {
+		t.Fatalf("单端口活跃键 = %d, want 面板 uid 4242", single.GetAccount())
+	}
+}
+
 // 32 位目标（linux/386、arm、mips、mipsle 都在发布清单里）不会因为字段插在中间而补对齐，
 // 这两个计数器离开结构体首地址就会让 sync/atomic 在运行时 panic unaligned 64-bit atomic operation
 func TestAtomicCountersStayAtStructHead(t *testing.T) {
@@ -126,6 +158,7 @@ func TestReadFromKeepsWholeDatagram(t *testing.T) {
 type countingReport struct {
 	identity int
 	uploaded int64
+	uidOf    map[int]int
 }
 
 func (c *countingReport) Upload(identity int, n int64) {
@@ -134,6 +167,10 @@ func (c *countingReport) Upload(identity int, n int64) {
 }
 
 func (c *countingReport) Download(int, int64) {}
+
+func (c *countingReport) IdentityToUid(identity int) int {
+	return c.uidOf[identity]
+}
 
 // newDecorateWith 用一对内存管道的一端顶替真实连接，造服务端侧装饰器。
 func newDecorateWith(t *testing.T, obfsMethod, method, protocol string, single, port int) (*ShadowsocksRDecorate, error) {

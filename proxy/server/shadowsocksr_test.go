@@ -43,6 +43,8 @@ func (r *fakeReport) Upload(identity int, n int64) {
 
 func (r *fakeReport) Download(int, int64) {}
 
+func (r *fakeReport) IdentityToUid(int) int { return 0 }
+
 func (r *fakeReport) Online(identity int, _ string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

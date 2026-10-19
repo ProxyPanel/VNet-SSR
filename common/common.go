@@ -6,6 +6,9 @@ package common
 type TrafficReport interface {
 	Upload(identity int, n int64)
 	Download(identity int, n int64)
+	// IdentityToUid 把线上身份编号反查成面板账号编号，查不到返回 0。
+	// 只有要按账号呈现的地方用它（会话身份、活跃账号计数）；记账入参仍然是端口
+	IdentityToUid(identity int) int
 }
 
 type OnlineReport interface {

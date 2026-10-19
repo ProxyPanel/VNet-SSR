@@ -78,6 +78,7 @@ type ShadowsocksRDecorate struct {
 	// 单端口 = auth 包头 4 字节里的账号编号；
 	// TrafficReport/OnlineReport/限速都拿它反查账号
 	Identity      int
+	Uid           int // 单端口下 auth 包认出账号后反查出的面板 uid；多端口恒为 0
 	obfs          obfs.Plain
 	protocol      obfs.Plain
 	encryptor     *ciphers.Encryptor
@@ -108,6 +109,15 @@ func (ssrd *ShadowsocksRDecorate) PeekPlain() []byte {
 // GetIdentity 返回本会话的线上身份编号：多端口模式下就是监听端口，单端口模式下从 auth 包的
 // 4 字节字段解出（该字段按 SSR 线格式叫 "uid"，本面板约定装的是端口）
 func (ssrd *ShadowsocksRDecorate) GetIdentity() int {
+	return ssrd.Identity
+}
+
+// GetAccount 返回本会话计入「活跃账号数」的编号：多端口下是监听端口，单端口下是面板 uid。
+// 单端口还没认出账号（含反查不到）时是 0，这条会话不计入 —— 它的字节同样进不了账
+func (ssrd *ShadowsocksRDecorate) GetAccount() int {
+	if ssrd.single == 1 {
+		return ssrd.Uid
+	}
 	return ssrd.Identity
 }
 
@@ -368,9 +378,16 @@ func (ssrd *ShadowsocksRDecorate) getServerInfo(isObfs bool) obfs.ServerInfo {
 }
 
 func (ssrd *ShadowsocksRDecorate) UpdateUser(uid []byte) {
-	if ssrd.single == 1 {
-		uidInt := binaryx.LEBytesToUInt32(uid)
-		ssrd.Identity = int(uidInt)
-		logrus.Infof("ShadowsocksRDecorate update uid: %v", uidInt)
+	if ssrd.single != 1 {
+		return
 	}
+	identity := int(binaryx.LEBytesToUInt32(uid))
+	ssrd.Identity = identity
+	if ssrd.TrafficReport == nil {
+		return
+	}
+	// 添加账号是先写密码表、再写身份索引，落在这两步之间的那条连接会反查回 0：
+	// 它随后上报的字节进 uid 0 桶，发送前被丢掉
+	ssrd.Uid = ssrd.TrafficReport.IdentityToUid(identity)
+	logrus.Infof("ShadowsocksRDecorate update uid: %v", ssrd.Uid)
 }
