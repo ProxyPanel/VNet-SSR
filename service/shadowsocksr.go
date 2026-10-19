@@ -33,11 +33,19 @@ func GetSSRManager() *SSRManager {
 type AddUserHandle func(*model.UserInfo)
 type DelUserHandle func(*model.UserInfo)
 
+// 流量上报的起报门槛与最长滞留：单行增量不足门槛时留在本地继续累加，
+// 但滞留满 trafficReportMaxHold 就必须上报，不能让低流量账号的字节无限期停在节点上
+const (
+	trafficReportMinBytes = 50 * 1024
+	trafficReportMaxHold  = 10 * time.Minute
+)
+
 func NewShadowsocksrService() *SSRManager {
 	return &SSRManager{
 		Locker:        new(sync.Mutex),
 		Shadowsocksrs: make(map[int]*server.ShadowsocksRProxy),
 		traffic:       make(map[int]*model.UserTraffic),
+		trafficSince:  make(map[int]time.Time),
 		trafficLock:   new(sync.Mutex),
 		online:        make(map[int]*model.NodeOnline),
 		onlineLock:    new(sync.Mutex),
@@ -53,6 +61,8 @@ type SSRManager struct {
 	sync.Locker
 	Shadowsocksrs map[int]*server.ShadowsocksRProxy
 	traffic       map[int]*model.UserTraffic
+	// trafficSince 记下「被门槛拦下的那批字节从何时开始攒」，用于最长滞留时间到点强制上报
+	trafficSince  map[int]time.Time
 	trafficLock   *sync.Mutex
 	online        map[int]*model.NodeOnline
 	onlineLock    *sync.Mutex
@@ -124,16 +134,38 @@ func (s *SSRManager) ReportTraffic() []*model.UserTraffic {
 	reportID := fmt.Sprintf("%d-%d-%d", core.GetApp().NodeId(), s.bootStamp, s.reportSeq)
 
 	convertReportData := make([]*model.UserTraffic, 0, len(reportData))
-	for _, value := range reportData {
+	for uid, value := range reportData {
 		// uid 为 0 的是端口查不到账号的字节，面板不会收
 		if value.Uid <= 0 {
 			continue
+		}
+		since, held := s.trafficSince[uid]
+		// 滞留到点的行必须走，哪怕还是不足门槛：不然掉线或被禁用的人剩下的尾巴永远不上账
+		if value.Upload+value.Download < trafficReportMinBytes && (!held || time.Since(since) < trafficReportMaxHold) {
+			s.retainTraffic(uid, value)
+			continue
+		}
+		if held {
+			delete(s.trafficSince, uid)
 		}
 		value.ReportID = reportID
 		convertReportData = append(convertReportData, value)
 	}
 
 	return convertReportData
+}
+
+// retainTraffic 把没到门槛的增量并回本地表继续攒：这一分钟新到的字节可能已经先落进去了
+func (s *SSRManager) retainTraffic(uid int, value *model.UserTraffic) {
+	if _, seen := s.trafficSince[uid]; !seen {
+		s.trafficSince[uid] = time.Now()
+	}
+	if cur := s.traffic[uid]; cur != nil {
+		cur.Upload += value.Upload
+		cur.Download += value.Download
+		return
+	}
+	s.traffic[uid] = value
 }
 
 // requeueTraffic 把没送达的整批留在原地等下一轮重发；与新的增量合并会让 report_id 对不上内容，去重就废了

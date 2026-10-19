@@ -17,14 +17,16 @@ func TestMain(m *testing.M) {
 }
 
 func TestReportTrafficDrainsAndRequeuesOnFailure(t *testing.T) {
+	// 基数都取在起报门槛之上：这条用例测的是取批、整批重发与新批换 id，
+	// 门槛拦下的字节怎么累计与强制冲刷由 traffic_port_test.go 覆盖
 	s := NewShadowsocksrService()
-	s.traffic[1] = &model.UserTraffic{Uid: 1, Upload: 100, Download: 200}
-	s.traffic[2] = &model.UserTraffic{Uid: 2, Upload: 1, Download: 1}
+	s.traffic[1] = &model.UserTraffic{Uid: 1, Upload: reportMin, Download: 200}
+	s.traffic[2] = &model.UserTraffic{Uid: 2, Upload: reportMin}
 
 	first := s.ReportTraffic()
 
 	if len(first) != 2 {
-		t.Fatalf("两份增量都要上报（小流量不再被门槛吃掉）: %+v", first)
+		t.Fatalf("两份增量都要上报: %+v", first)
 	}
 	if len(s.traffic) != 0 {
 		t.Fatalf("上报后待上报表应清空: %+v", s.traffic)
@@ -35,7 +37,7 @@ func TestReportTrafficDrainsAndRequeuesOnFailure(t *testing.T) {
 
 	// 发送失败：整批留在原地等重发，report_id 不变，面板据此把这批只算一次
 	s.requeueTraffic(first)
-	s.traffic[1] = &model.UserTraffic{Uid: 1, Upload: 50} // 清账之后又累计到的量
+	s.traffic[1] = &model.UserTraffic{Uid: 1, Upload: reportMin} // 清账之后又累计到的量
 
 	second := s.ReportTraffic()
 
@@ -45,7 +47,7 @@ func TestReportTrafficDrainsAndRequeuesOnFailure(t *testing.T) {
 
 	third := s.ReportTraffic()
 
-	if len(third) != 1 || third[0].Uid != 1 || third[0].Upload != 50 {
+	if len(third) != 1 || third[0].Uid != 1 || third[0].Upload != reportMin {
 		t.Fatalf("重发期间累计的字节要留在待上报表里，不能丢: %+v", third)
 	}
 	if third[0].ReportID == first[0].ReportID {
