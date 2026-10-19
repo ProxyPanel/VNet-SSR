@@ -1,5 +1,5 @@
 [Unit]
-Description=VNet Service
+Description=VNet SSR 节点后端
 After=network.target
 Wants=network.target
 
@@ -7,9 +7,7 @@ Wants=network.target
 Type=simple
 ExecStart=/usr/bin/vnet/vnet --config /etc/vnet/config.json
 Restart=on-failure
-# Don't restart in the case of configuration error
-#RestartPreventExitStatus=23
-LimitNOFILE=20480000
+LimitNOFILE=1048576
 RestartSec=5
 
 [Install]

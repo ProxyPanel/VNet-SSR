@@ -122,7 +122,7 @@ else
   rm -f "$CONNTRACK"
 fi
 
-# unit 里的 LimitNOFILE 高于 fs.nr_open 是假上限，这里压到内核允许的那个数
+# LimitNOFILE 高于 fs.nr_open 就是假上限：按内核允许的那个数落地（存量安装的 unit 可能带着旧的大值）
 cat >"$DROPIN" <<EOF
 # 由 release/tune.sh 生成，--rollback 删除
 [Service]
