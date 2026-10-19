@@ -18,8 +18,8 @@
 #   -p, --proxy URL        走代理下载，如 -p http://127.0.0.1:3128
 #       --version vX.Y.Z   升到/退到指定版本（退旧版就是手动回滚的通道）
 #
-# 退出码：0 成功或已是最新；1 环境错误（未装 vnet、缺 curl/unzip）；
-#         2 新版启动失败（已回滚到旧版）；3 网络错误；10 --check 发现有新版
+# 退出码：0 成功或已是最新；1 环境错误（未装 vnet、缺 curl/unzip、坏包）；
+#         2 新版启动失败（已回滚到旧版）；3 拿不到包（网络失败，或该版本没有发布产物）；10 --check 发现有新版
 #
 # 首次安装仍走 deploy.sh（建配置、装单元、可选调优）；本脚本假设节点已由 deploy.sh 装好。
 # 包名与下载 URL 格式与 deploy.sh 一致，源头是 release CI 的发布产物与 release/version.json。
@@ -128,12 +128,19 @@ downloadAndExtract() {
   mkdir -p "$VSRC_ROOT"
   local link="https://github.com/ProxyPanel/VNet-SSR/releases/download/${NEW_VER}/vnet-linux-${VDIS}.zip"
   colorEcho ${BLUE} "下载 ${link}"
-  if ! curl ${PROXY} -L -H "Cache-Control: no-cache" -o "${ZIPFILE}" "${link}"; then
-    colorEcho ${RED} "下载失败，检查网络或重试。"
+  # -f 是判据的全部：没有它，404 的 9 字节正文会被当成包落进 ZIPFILE，报成「包不完整」
+  local rc=0 http_code
+  http_code="$(curl ${PROXY} -f -L -H "Cache-Control: no-cache" -o "${ZIPFILE}" -w '%{http_code}' "${link}")" || rc=$?
+  if [[ "$rc" == 22 ]]; then
+    colorEcho ${RED} "拿不到 ${NEW_VER} 的 linux-${VDIS} 发布包（HTTP ${http_code}）。包按 tag 推送后的 CI 发布：tag 没推上去、或发布 job 还没跑完时这里就是 404，用 --version 指定一个已发布的版本即可落地。"
+    return 3
+  fi
+  if [[ "$rc" != 0 ]]; then
+    colorEcho ${RED} "下载失败（curl ${rc}），检查网络或重试。"
     return 3
   fi
   if ! unzip -q "$ZIPFILE" -d "$VSRC_ROOT"; then
-    colorEcho ${RED} "解压失败，包可能不完整。"
+    colorEcho ${RED} "解压失败：下载是完整的，但内容不是 zip（坏包，不是版本不存在）。"
     return 1
   fi
   # 发布包的目录名带版本与平台（同 deploy.sh 的 extract）

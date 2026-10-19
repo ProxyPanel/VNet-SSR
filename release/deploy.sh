@@ -6,7 +6,7 @@
 # 0: Success
 # 1: System error
 # 2: Application error
-# 3: Network error
+# 3: Network error (curl failed, or the release has no asset for this version/platform)
 
 RAW_BASE='https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master'
 
@@ -153,9 +153,15 @@ downloadVNet() {
   mkdir -p /tmp/vnet
   DOWNLOAD_LINK="https://github.com/ProxyPanel/VNet-SSR/releases/download/${NEW_VER}/vnet-linux-${VDIS}.zip"
   colorEcho ${BLUE} "Downloading vnet: ${DOWNLOAD_LINK}"
-  curl ${PROXY} -L -H "Cache-Control: no-cache" -o ${ZIPFILE} ${DOWNLOAD_LINK}
-  if [ $? != 0 ]; then
-    colorEcho ${RED} "Failed to download! Please check your network or try again."
+  # -f 是判据的全部：没有它，404 的 9 字节正文会落进 ZIPFILE，再由 extract 报成解压失败
+  local rc=0 http_code
+  http_code="$(curl ${PROXY} -f -L -H "Cache-Control: no-cache" -o "${ZIPFILE}" -w '%{http_code}' "${DOWNLOAD_LINK}")" || rc=$?
+  if [[ "$rc" == 22 ]]; then
+    colorEcho ${RED} "Failed to download: no release asset for ${NEW_VER} linux-${VDIS} (HTTP ${http_code}). 包按 tag 推送后的 CI 发布，version.json 已宣称版号而 tag 没推（或发布 job 还没跑完）时这里就是 404，不是包坏了；用 --version 指定一个已发布的版本即可落地。"
+    return 3
+  fi
+  if [[ "$rc" != 0 ]]; then
+    colorEcho ${RED} "Failed to download! Please check your network or try again. (curl ${rc})"
     return 3
   fi
   return 0
@@ -213,7 +219,7 @@ extract() {
   mkdir -p /tmp/vnet
   unzip $1 -d ${VSRC_ROOT}
   if [[ $? -ne 0 ]]; then
-    colorEcho ${RED} "Failed to extract vnet."
+    colorEcho ${RED} "Failed to extract vnet. 下载那步已经确认是 200，打不开就是发布包本身坏了；走 --local 时则是那个文件不对。"
     return 2
   fi
   if [[ -d "/tmp/vnet/vnet-${NEW_VER}-linux-${VDIS}" ]]; then
