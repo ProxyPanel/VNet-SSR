@@ -8,20 +8,20 @@ info:
     本后端与账号面板之间的双向接口。两个方向各有服务端：
 
     * **面板侧**（`servers: panel`）：节点拉配置/用户列表，并上报流量、在线、心跳、审计命中。
-      前缀可为 `ssr/v1`、`web/v1`、`vnet/v2`（本后端实际使用 `ssr/v1`）。
+      本后端按 `ssr/v1` 前缀拼 URL。
     * **节点侧**（`servers: node`）：面板反向推送用户与节点配置，监听 `node.push_port`。
 
     鉴权：面板侧要求请求头 `key`（节点授权 key）与 `timestamp`（unix 秒，与面板时差 ≥300 秒即拒）；
     节点侧要求请求头 `secret`（面板下发的节点 secret）。
 
-    单位约定（最容易对错的地方）：流量与限速一律 **字节**、字节/秒；时间戳一律 unix 秒。
+    单位约定：流量与限速一律 **字节**、字节/秒；时间戳一律 unix 秒。
     面板数据库里 `speed_limit` 存字节/秒，但其展示 cast 读出来是 Mbps —— 下发给本后端必须是字节/秒，
     出现小数（如 `12.5`）即为错误：`UserInfo.speed_limit` 是 `uint64`，绑定失败会让整条请求被拒。
 servers:
   - url: https://panel.example.com/api
-    description: "面板宿主（sysConfig('web_api_url') ?: website_url），路径带协议前缀"
+    description: "面板宿主（面板给节点用的基址），路径带协议前缀"
   - url: http://NODE_HOST:PUSH_PORT/api
-    description: "本后端宿主（面板按 Node::pushAddresses() 逐个地址推送）"
+    description: "本后端宿主（面板逐个地址推送到 push_port）"
 tags:
   - name: panel
     description: 面板实现、本后端调用
@@ -100,6 +100,8 @@ paths:
         同一批内各行相同，重发不变，新批次换新值。面板按 `(node_id, report_id)` **整批**认领即闭环
         （这批的写入是单事务全有或全无，「记了一半」的中间态不存在，所以不必按 uid 逐个认领）；
         未认领前该字段只是一个被忽略的多余键，不影响现有实现。
+        单行增量不足 50 KiB 时本后端先不发，留在本地继续累加，滞留满 10 分钟强制上报；
+        因此 `upload`/`download` 可能是跨几分钟的累计值，面板照原样累加即可。
       operationId: reportUserTraffic
       parameters:
         - $ref: '#/components/parameters/NodePathId'
@@ -192,7 +194,7 @@ paths:
         reason 是被命中的判定对象：目标地址本身命中时是它；首包嗅探（HTTP Host / TLS SNI）命中时是嗅出的域名。
         target/sniff_* 字段带完整现场（去向、嗅出的协议/域名/路径），面板落进 rule_log 独立列。
         节点侧排队重投（at-least-once，面板不可达时不丢）；面板按 (node,uid,rule,reason) 冷却窗口去重
-        （sysConfig `rule_log_cooldown` 分钟，默认 30），窗口内的重复上报只 ack 不二次落档。
+        （面板侧配置，默认 30 分钟），窗口内的重复上报只 ack 不二次落档。
         只有业务码 400200（参数错误）算「这条载荷永远不会被接受」，队列丢掉这一条并继续投后面的；
         HTTP 状态分不开永久与暂时（写库失败同样回 400），所以判据只取响应体的 `code`。
       operationId: reportTrigger
@@ -353,7 +355,7 @@ components:
       type: apiKey
       in: header
       name: secret
-      description: 面板 `node_auth.secret`
+      description: 面板下发的节点 secret
   parameters:
     NodePathId:
       name: node
@@ -368,7 +370,7 @@ components:
       required: true
       schema:
         type: string
-      description: 节点授权 key（`node_auth.key`）
+      description: 面板发的节点授权 key
     TimestampHeader:
       name: timestamp
       in: header
@@ -484,7 +486,7 @@ components:
         single:
           type: integer
           enum: [0, 1]
-          description: 判据是面板 `Node::isSinglePort()`（profile.passwd 非空才算填了）。
+          description: 由面板决定：置 1 就按单端口跑，共享密码走 `passwd`。
             单端口只有一个监听端口，账号只能靠鉴权包头那 4 字节区分，因此要求 `protocol` 会携带账号身份
             （`auth_aes128_md5`/`auth_aes128_sha1`/`auth_chain_a~f`）；配上其余协议（含 `auth_sha1_v4`）
             时节点拒绝落地该配置并回错误，而不是跑起来后流量、在线与限速全部无法归属

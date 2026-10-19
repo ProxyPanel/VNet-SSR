@@ -378,8 +378,8 @@ installInitScript() {
 
 Help() {
   cat - 1>&2 <<EOF
-面板后台复制的那条命令不用改：它只装节点，装完会顺手把这台机器的体检结果打出来，
-要不要更进一步由你决定。要加东西只记一个位置 —— 写在管道末尾 bash 前面的变量串里：
+面板后台复制的那条命令照原样跑就行：只装节点，默认不动这台机器的内核参数与解析配置
+（缺 unzip 时用发行版的包管理器补装）。要加东西只改一处 —— 写在管道末尾 bash 前面的变量串里：
 
   curl -s <地址> | WEB_API="..." NODE_ID=1 NODE_KEY=... WITH_TUNE=1 bash
 
@@ -388,8 +388,9 @@ Help() {
   WITH_DNS_CACHE=1   装 dnsmasq 做本机解析缓存（只监听 127.0.0.1；验证不过会还原 resolv.conf）
   WEB_API/NODE_ID/NODE_KEY  三个都给才会改写 /etc/vnet/config.json
 
-命令行形式（下载下来直接跑脚本时才用得上，开关要写给 bash 不是写给 curl）：
-  bash deploy.sh [-h] [-c] [--remove] [-p proxy] [-f] [--version vx.y.z] [-l file] [-t]
+命令行形式（把脚本下载下来直接跑时才有用，开关写给 bash 不是写给 curl）：
+  bash deploy.sh [-h] [-c] [-f] [-t] [-p URL] [-l FILE] [--version vx.y.z]
+                 [--remove] [--extract DIR] [--extractonly] [--with-dns-cache] [--errifuptodate]
     -h, --help            本帮助
     -p, --proxy           走代理下载，如 -p socks5://127.0.0.1:1080 或 -p http://127.0.0.1:3128
     -f, --force           版本相同也重装
@@ -400,9 +401,11 @@ Help() {
         --with-dns-cache  同 WITH_DNS_CACHE=1
         --version vx.y.z  装指定版本
         --errifuptodate   已是最新版时以 10 退出
-        --extract DIR     解包到指定目录（配 --extractonly 只解不装）
+        --extract DIR     解包到指定目录
+        --extractonly     只解包不安装（配 --extract 用）
 
 已装好的节点只想换版本（不碰配置/单元/调优、不需要凭据、失败自动回滚）：跑 release/upgrade.sh。
+判据、手工对账与排障：https://github.com/ProxyPanel/VNet-SSR/tree/master/docs
 EOF
 }
 

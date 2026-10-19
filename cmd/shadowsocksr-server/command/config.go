@@ -21,26 +21,26 @@ var flagConfigs = []FlagSetting{
 	FlagSetting{
 		Type:     reflect.String,
 		Name:     API_HOST,
-		Usage:    "api host example: http://localhost",
+		Usage:    "面板基址，不带路径，例 https://panel.example.com",
 		Required: true,
 	},
 	FlagSetting{
 		Type:     reflect.String,
 		Name:     HOST,
-		Usage:    "host example: 0.0.0.0",
+		Usage:    "监听地址；双栈写 [::]",
 		Required: true,
 		Default:  "0.0.0.0",
 	},
 	FlagSetting{
 		Type:     reflect.Int,
 		Name:     NODE_ID,
-		Usage:    "node_id",
+		Usage:    "面板上的节点 id，填 0 视为未填",
 		Required: true,
 	},
 	FlagSetting{
 		Type:     reflect.String,
 		Name:     KEY,
-		Usage:    "key",
+		Usage:    "节点授权 key（面板的 node_auth.key）",
 		Required: true,
 	},
 }

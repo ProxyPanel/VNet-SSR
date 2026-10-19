@@ -14,14 +14,14 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:     filepath.Base(os.Args[0]),
-	Short:   fmt.Sprintf("vnet version %s\r\n", core.APP_VERSION),
-	Long:    fmt.Sprintf("vnet webapi version with ProxyPanel, current version: %s", core.APP_VERSION),
+	Short:   "SSR 协议节点后端，配合 OtakuCloud 面板使用",
+	Long:    "vnet 启动时按 node_id 与 key 向面板拉本节点的监听配置与用户表，按端口起转发，\n再周期性上报流量、在线、心跳与审计命中。\n\n配置默认读当前目录的 config.json，用 --config 指定其它文件；四个键也能用同名命令行标志传。",
 	Version: core.APP_VERSION,
 }
 
 func init() {
 	cobra.OnInitialize(initConfig)
-	rootCmd.Flags().String("config", "config.json", "config file default: config.json")
+	rootCmd.Flags().String("config", "config.json", "配置文件路径")
 	_ = viper.BindPFlag("config", rootCmd.Flags().Lookup("config"))
 
 	// 部署脚本取的是这行的第二个字段（cut -d " " -f2）来和 version.json 比，格式不能改
