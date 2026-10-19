@@ -210,6 +210,88 @@ func TestNodeReloadKeepsRunningConfigWhenPanelUnreachable(t *testing.T) {
 	}
 }
 
+// 推送是 GET 之外唯一会改用户表的入口：收到一条就要丢掉手里的 userList 基线，
+// 否则下一轮周期同步会拿旧哈希比出「没变」，推送丢的那次永远补不回来
+func TestPushEndpointsInvalidateUserListEtag(t *testing.T) {
+	core.GetApp().SetNodeInfo(&model.NodeInfo{ID: 7, Port: "8388", Method: "aes-256-cfb", Secret: testPushSecret, PushPort: 30108})
+	prevHost, prevID, prevKey := client.Host, core.GetApp().NodeId(), core.GetApp().Key()
+	t.Cleanup(func() {
+		client.Host = prevHost
+		core.GetApp().SetNodeId(prevID)
+		core.GetApp().SetKey(prevKey)
+	})
+
+	const baseline = "etag-baseline"
+	const usersJSON = `[{"uid":1,"port":1001,"passwd":"p","speed_limit":0,"enable":1}]`
+	var sent []string
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		match := r.Header.Get("If-None-Match")
+		sent = append(sent, match)
+		if match == baseline {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Etag", baseline)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"success","data":` + usersJSON + `}`))
+	}))
+	t.Cleanup(panel.Close)
+	client.Host = panel.URL + "/api/ssr/v1"
+	core.GetApp().SetNodeId(7)
+	core.GetApp().SetKey("node-secret")
+
+	push := newPushRouter(t, testPushSecret)
+
+	// 载荷都用 enable=0 的陌生 uid：落地是 no-op，不会去绑端口，测的只是「收到过这条推送」
+	for _, tc := range []struct{ name, path, body string }{
+		{"批量下发", "/api/v2/user/add/list", `[{"uid":99,"port":19001,"passwd":"p","speed_limit":0,"enable":0}]`},
+		{"单个下发", "/api/user/add", `{"uid":98,"port":19002,"passwd":"p","speed_limit":0,"enable":0}`},
+		{"单个编辑", "/api/user/edit", `{"uid":97,"port":19003,"passwd":"p","speed_limit":0,"enable":0}`},
+		{"批量删除", "/api/v2/user/del/list", `[96]`},
+		{"单个删除", "/api/user/del/95", ``},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// 先把基线铺上：带着它轮询拿的是 304，说明「没作废」那一侧真有得比
+			if _, err := client.GetUserList(); err != nil {
+				t.Fatalf("取基线失败: %s", err.Error())
+			}
+			if _, unchanged, err := client.SyncUserList(); err != nil || !unchanged {
+				t.Fatalf("铺垫没能让节点持着基线: unchanged=%v err=%v", unchanged, err)
+			}
+
+			postTo(t, push.URL+tc.path, testPushSecret, tc.body)
+
+			mark := len(sent)
+			_, unchanged, err := client.SyncUserList()
+			if err != nil {
+				t.Fatalf("推送后的同步失败: %s", err.Error())
+			}
+			if len(sent)-mark != 1 {
+				t.Fatalf("推送之后这一轮该发一次 userList，实到 %d 次", len(sent)-mark)
+			}
+			if sent[mark] != "" {
+				t.Fatalf("%s 之后仍带旧基线 %q 去轮询，面板会回 304 把丢失的推送盖住", tc.path, sent[mark])
+			}
+			if unchanged {
+				t.Fatalf("%s 之后丢了基线却仍判成未变", tc.path)
+			}
+		})
+	}
+
+	// 反向对照：读用户表不作废基线，否则面板每推一次节点都白拉一遍全量
+	if _, err := client.GetUserList(); err != nil {
+		t.Fatalf("取基线失败: %s", err.Error())
+	}
+	getFrom(t, push.URL+"/api/user/list", testPushSecret)
+	mark := len(sent)
+	if _, unchanged, err := client.SyncUserList(); err != nil || !unchanged {
+		t.Fatalf("读用户表之后不该重新拉全量: unchanged=%v err=%v", unchanged, err)
+	}
+	if len(sent)-mark != 1 || sent[mark] != baseline {
+		t.Fatalf("读用户表把基线冲掉了，这一轮发的是 %q", sent[mark:])
+	}
+}
+
 func freePort(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

@@ -33,6 +33,13 @@ func loadUserListEtag() string {
 	return ""
 }
 
+// MarkUserListStale 作废缓存的基线哈希：用户表被 GET 之外的路径改过之后，手里这份哈希
+// 描述的已经不是表的内容了。留着它会让下一轮轮询拿旧基线比出「没变」（304），
+// 于是推送丢失或面板侧绕过推送的写入都没有收敛机会
+func MarkUserListStale() {
+	userListEtag.Store("")
+}
+
 const (
 	pullAttempts = 3
 	pullBackoff  = 5 * time.Second

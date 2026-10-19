@@ -280,22 +280,53 @@ func (s *SSRManager) NewShadowsocksRProxy(port int, method, passwd, protocol, pr
 	return shadowsocksRProxy
 }
 
+// 一次下发的来源，只用于日志：同样一批人可能来自推送、周期同步或启动全量，
+// 事后看日志要能分辨是哪条路动的用户表
+const (
+	SourcePush   = "push"   // 面板推 /api/user/* 与 /api/v2/user/*
+	SourcePoll   = "poll"   // 节点每 5 分钟的周期同步
+	SourceBoot   = "boot"   // 启动时的全量落地
+	SourceReload = "reload" // 重载时的全量落地
+)
+
+// applyAction 是一次下发对本地用户表的实际影响；applyNone 表示内容与本地一致，不值得记日志
+type applyAction string
+
+const (
+	applyNone   applyAction = "none"
+	applyAdd    applyAction = "add"
+	applyEdit   applyAction = "edit"
+	applyRemove applyAction = "remove"
+)
+
 // ApplyUsers 落下面发的目标状态：enable=0 摘掉账号，已存在且字段变了就换，完全一致则不动。
 // 中途失败不回滚已应用的行——回滚等于把「更新过」的账号直接删掉，重投这批才是收敛路径。
-func (s *SSRManager) ApplyUsers(users []*model.UserInfo) error {
+func (s *SSRManager) ApplyUsers(source string, users []*model.UserInfo) error {
 	s.userTableLock.Lock()
 	defer s.userTableLock.Unlock()
 
 	var errs []string
+	changed := 0
 
 	for _, item := range users {
-		if err := s.applyUser(item); err != nil {
+		action, err := s.applyUser(item)
+		if err != nil {
 			errs = append(errs, fmt.Sprintf("uid %v: %s", item.Uid, err.Error()))
 
 			continue
 		}
 
-		logrus.Infof("apply user,uid: %v, port: %v", item.Uid, item.Port)
+		// 只有真的动了表才记一行：全量下发里没变的账号占了绝大多数，逐行记就成了噪音
+		if action != applyNone {
+			changed++
+			logrus.Infof("apply user %v, uid: %v, port: %v, source: %v", action, item.Uid, item.Port, source)
+		}
+	}
+
+	// 整批没有一个账号落地成变动时留一行：否则这一轮全量下发在日志里是空的，
+	// 看日志的人分不清「面板没人改动」还是「改动没送到」
+	if changed == 0 && len(errs) == 0 && len(users) > 0 {
+		log.Info("apply users no change, source: %v, total: %v", source, len(users))
 	}
 
 	if len(errs) > 0 {
@@ -305,38 +336,61 @@ func (s *SSRManager) ApplyUsers(users []*model.UserInfo) error {
 	return nil
 }
 
+// planApply 只判「这条下发相对本地表要做什么」，不碰监听器：enable=0 是摘号，表里没行是建号，
+// 内容一致什么都不动，其余是换号
+func planApply(before, target *model.UserInfo) applyAction {
+	if target.Enable == 0 {
+		if before == nil { // 本来就不在表里，与「已摘掉」同义
+			return applyNone
+		}
+
+		return applyRemove
+	}
+
+	if before == nil {
+		return applyAdd
+	}
+	if *before == *target {
+		return applyNone
+	}
+
+	return applyEdit
+}
+
 // applyUser 调用方需持有 userTableLock
-func (s *SSRManager) applyUser(user *model.UserInfo) error {
+func (s *SSRManager) applyUser(user *model.UserInfo) (applyAction, error) {
 	if user.Uid <= 0 {
-		return errors.New("uid must be positive")
+		return applyNone, errors.New("uid must be positive")
 	}
 
-	if user.Enable == 0 {
-		// 本来就不在节点上时 delUserReturl 会报错，这里与「已摘掉」同义
-		_, _ = s.delUserReturl(user.Uid)
-
-		return nil
-	}
+	action := planApply(s.userTable[user.Uid], user)
 
 	// 缺 port/passwd 的行不能落：port 0 会真的去绑一个随机端口（多端口）或让线上认不出人（单端口），空密码等于开放账号
-	if user.Port <= 0 || user.Port > 65535 {
-		return errors.New(fmt.Sprintf("uid %v has invalid port %v", user.Uid, user.Port))
-	}
-	if user.Passwd == "" {
-		return errors.New(fmt.Sprintf("uid %v has empty passwd", user.Uid))
-	}
-
-	before := s.userTable[user.Uid]
-	if before == nil {
-		return s.addUser(user)
-	}
-	if *before == *user {
-		return nil
+	if action == applyAdd || action == applyEdit {
+		if user.Port <= 0 || user.Port > 65535 {
+			return applyNone, errors.New(fmt.Sprintf("uid %v has invalid port %v", user.Uid, user.Port))
+		}
+		if user.Passwd == "" {
+			return applyNone, errors.New(fmt.Sprintf("uid %v has empty passwd", user.Uid))
+		}
 	}
 
-	_, err := s.editUserReturn(user)
+	switch action {
+	case applyRemove:
+		if _, err := s.delUserReturl(user.Uid); err != nil {
+			return applyNone, err
+		}
+	case applyAdd:
+		if err := s.addUser(user); err != nil {
+			return applyNone, err
+		}
+	case applyEdit:
+		if _, err := s.editUserReturn(user); err != nil {
+			return applyNone, err
+		}
+	}
 
-	return err
+	return action, nil
 }
 
 // SyncUsers 用面板的全量集合收敛本地表：userList 只含有效账号，缺席即视为该摘掉
@@ -364,7 +418,7 @@ func (s *SSRManager) SyncUsers(users []*model.UserInfo) error {
 		}
 	}
 
-	return s.ApplyUsers(users)
+	return s.ApplyUsers(SourcePoll, users)
 }
 
 func (s *SSRManager) DelUsers(uids []int) error {
@@ -382,16 +436,9 @@ func (s *SSRManager) DelUsers(uids []int) error {
 			}
 			return err
 		}
-		logrus.Infof("del uid: %v \n", uid)
+		logrus.Infof("del uid: %v, port: %v", item.Uid, item.Port)
 	}
 	return nil
-}
-
-func (s *SSRManager) AddUser(user *model.UserInfo) error {
-	logrus.Infof("add user,uid: %v, port: %v", user.Uid, user.Port)
-	s.userTableLock.Lock()
-	defer s.userTableLock.Unlock()
-	return s.applyUser(user)
 }
 
 func (s *SSRManager) addUser(user *model.UserInfo) error {
@@ -432,13 +479,6 @@ func (s *SSRManager) addUser(user *model.UserInfo) error {
 	return nil
 }
 
-func (s *SSRManager) EditUser(user *model.UserInfo) error {
-	logrus.Infof("edit user,uid: %v, port: %v", user.Uid, user.Port)
-	s.userTableLock.Lock()
-	defer s.userTableLock.Unlock()
-	return s.applyUser(user)
-}
-
 func (s *SSRManager) editUserReturn(user *model.UserInfo) (before *model.UserInfo, err error) {
 	nodeInfo := core.GetApp().NodeInfo()
 	// 换端口先摘旧监听再建新监听，两个端口不会同时存在
@@ -461,9 +501,13 @@ func (s *SSRManager) editUserReturn(user *model.UserInfo) (before *model.UserInf
 func (s *SSRManager) DelUser(uid int) error {
 	s.userTableLock.Lock()
 	defer s.userTableLock.Unlock()
-	logrus.Infof("del uid: %v \n", uid)
-	_, err := s.delUserReturl(uid)
-	return err
+	// 表里本来没这个人时什么都不动，也就不该有一行「del uid」
+	user, err := s.delUserReturl(uid)
+	if err != nil {
+		return err
+	}
+	logrus.Infof("del uid: %v, port: %v", user.Uid, user.Port)
+	return nil
 }
 
 func (s *SSRManager) delUserReturl(uid int) (user *model.UserInfo, err error) {
@@ -603,11 +647,11 @@ func (s *SSRManager) Start() error {
 		return fmt.Errorf("%s: %w", "get user list error", err)
 	}
 
-	return s.startWith(users)
+	return s.startWith(users, SourceBoot)
 }
 
 // startWith 按给定的全量集合重建服务：集合要在 Close 之前取好，取不到时当前服务原样保留
-func (s *SSRManager) startWith(users []*model.UserInfo) error {
+func (s *SSRManager) startWith(users []*model.UserInfo, source string) error {
 	s.Lock()
 	defer s.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -646,7 +690,7 @@ func (s *SSRManager) startWith(users []*model.UserInfo) error {
 		"firstLoadUserCount": len(users),
 	}).Info("get user list success")
 	// 单个端口冲突（两人同端口）不该挡住其余账号，其余人这轮已经生效
-	if err := s.ApplyUsers(users); err != nil {
+	if err := s.ApplyUsers(source, users); err != nil {
 		logrus.Error(err)
 	}
 	go s.ReportTask(ctx)
@@ -679,5 +723,5 @@ func (s *SSRManager) Restart(users []*model.UserInfo) error {
 	if err := s.Close(); err != nil {
 		return err
 	}
-	return s.startWith(users)
+	return s.startWith(users, SourceReload)
 }

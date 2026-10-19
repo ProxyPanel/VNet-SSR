@@ -220,6 +220,51 @@ func TestUserListPullStoresEtagAndSyncReusesIt(t *testing.T) {
 	}
 }
 
+// 用户表被 GET 之外的路径改过之后，手里那份哈希不再描述它：带着旧哈希轮询，面板按旧基线回 304，
+// 推送丢的那一次就永远没有收敛机会。作废之后下一轮必须重新取基线
+func TestMarkUserListStaleForcesNextFullFetch(t *testing.T) {
+	var got []recorded
+	current := `[{"uid":1,"port":8388,"passwd":"killer","speed_limit":0,"enable":1}]`
+	handler := func(r recorded) (int, http.Header, string) {
+		etag := "etag-" + strconv.Itoa(len(current))
+		if r.etag == etag {
+			return http.StatusNotModified, http.Header{}, ""
+		}
+		return http.StatusOK, http.Header{"Etag": []string{etag}}, `{"status":"success","data":` + current + `}`
+	}
+	server := newPanel(t, &got, handler)
+	usePanel(t, server)
+
+	if _, err := GetUserList(); err != nil {
+		t.Fatalf("全量拉取失败: %s", err.Error())
+	}
+	baseline := loadUserListEtag()
+	if baseline == "" {
+		t.Fatal("首拉没记下基线")
+	}
+	// 内容原样未变时带着基线轮询，命中的是 304
+	if _, unchanged, err := SyncUserList(); err != nil || !unchanged {
+		t.Fatalf("内容未变应命中 304: unchanged=%v err=%v", unchanged, err)
+	}
+
+	MarkUserListStale()
+	if loadUserListEtag() != "" {
+		t.Fatalf("作废后仍留着基线: %q", loadUserListEtag())
+	}
+
+	before := len(got)
+	synced, unchanged, err := SyncUserList()
+	if err != nil || unchanged || len(synced) != 1 {
+		t.Fatalf("作废基线后这一轮要重新取到全量: unchanged=%v err=%v", unchanged, err)
+	}
+	if got[before].etag != "" {
+		t.Fatalf("作废后仍带旧基线去轮询: %q", got[before].etag)
+	}
+	if loadUserListEtag() == "" {
+		t.Fatal("重新取到的全量要记下新基线，否则下一轮还是全量")
+	}
+}
+
 // 「取不到集合」与「集合为空」是两件事：[] 是面板上确实没人，报错才是拿不到
 func TestParseUserListSeparatesEmptyFromMissing(t *testing.T) {
 	users, err := parseUserList(`{"status":"success","data":[]}`)

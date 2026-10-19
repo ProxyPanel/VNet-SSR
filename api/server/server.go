@@ -194,7 +194,9 @@ func UsersAdd(c *gin.Context) {
 		return
 	}
 
-	if err := service.GetSSRManager().ApplyUsers(users); err != nil {
+	client.MarkUserListStale()
+
+	if err := service.GetSSRManager().ApplyUsers(service.SourcePush, users); err != nil {
 		fail(c, err)
 		return
 	}
@@ -208,6 +210,8 @@ func UsersDel(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+
+	client.MarkUserListStale()
 
 	if err := service.GetSSRManager().DelUsers(uids); err != nil {
 		fail(c, err)
@@ -224,7 +228,10 @@ func UserAdd(c *gin.Context) {
 		return
 	}
 
-	if err := service.GetSSRManager().AddUser(&user); err != nil {
+	client.MarkUserListStale()
+
+	// 与批量端点同一条落地路径：按 uid 落目标状态，内容一致时不动表也不记日志
+	if err := service.GetSSRManager().ApplyUsers(service.SourcePush, []*model.UserInfo{&user}); err != nil {
 		fail(c, err)
 		return
 	}
@@ -232,7 +239,10 @@ func UserAdd(c *gin.Context) {
 }
 
 func UserDel(c *gin.Context) {
-	if err := service.GetSSRManager().DelUser(langx.FirstResult(strconv.Atoi, c.Param("uid")).(int)); err != nil {
+	uid := langx.FirstResult(strconv.Atoi, c.Param("uid")).(int)
+	client.MarkUserListStale()
+
+	if err := service.GetSSRManager().DelUser(uid); err != nil {
 		fail(c, err)
 		return
 	}
@@ -245,7 +255,10 @@ func UserEdit(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	if err := service.GetSSRManager().EditUser(&user); err != nil {
+
+	client.MarkUserListStale()
+
+	if err := service.GetSSRManager().ApplyUsers(service.SourcePush, []*model.UserInfo{&user}); err != nil {
 		fail(c, err)
 		return
 	}

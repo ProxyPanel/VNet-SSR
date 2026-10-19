@@ -26,7 +26,8 @@ tags:
   - name: panel
     description: 面板实现、本后端调用
   - name: node
-    description: 本后端实现、面板调用
+    description: 本后端实现、面板调用。改用户表的推送落地后，本后端会作废手里那份 userList 基线（ETAG），
+      下一轮周期同步因此必然重新拉一次全量。
 paths:
   /ssr/v1/node/{node}:
     get:
@@ -66,6 +67,7 @@ paths:
       description: |
         只含面板认为有效的账号（`status <> -1 且 enable = 1`，并按节点等级/用户组过滤），按 `id` 升序。
         本后端在启动、reload、以及每 5 分钟的周期同步时拉取；日常增删靠面板推送。
+        推送落地会作废本后端手里上一份 ETAG，所以下一轮同步必然带不上 `If-None-Match`、拿到 200 全量并重新记基线。
       operationId: getUserList
       parameters:
         - $ref: '#/components/parameters/NodePathId'

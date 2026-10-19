@@ -1,9 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/ProxyPanel/VNet-SSR/model"
+	"github.com/sirupsen/logrus"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -111,7 +114,7 @@ func TestApplyUserDropsDisabledAccount(t *testing.T) {
 	s.userTable[1] = &model.UserInfo{Uid: 1, Port: 1001, Passwd: "p", Enable: 1}
 
 	// enable=0 的目标状态 = 摘掉账号；端口上没有进程时按「已摘掉」处理，不算失败
-	if err := s.ApplyUsers([]*model.UserInfo{{Uid: 1, Port: 1001, Passwd: "p", Enable: 0}}); err != nil {
+	if err := s.ApplyUsers(SourcePush, []*model.UserInfo{{Uid: 1, Port: 1001, Passwd: "p", Enable: 0}}); err != nil {
 		t.Fatalf("禁用账号的下发不该报错: %s", err.Error())
 	}
 
@@ -126,12 +129,104 @@ func TestApplyUserIsIdempotent(t *testing.T) {
 	s.userTable[1] = user
 
 	// 已存在且内容一致：不再建监听器，重投同一批不会多出什么
-	if err := s.ApplyUsers([]*model.UserInfo{{Uid: 1, Port: 1001, Passwd: "p", Limit: 0, Enable: 1}}); err != nil {
+	if err := s.ApplyUsers(SourcePush, []*model.UserInfo{{Uid: 1, Port: 1001, Passwd: "p", Limit: 0, Enable: 1}}); err != nil {
 		t.Fatalf("内容一致的重复下发不该报错: %s", err.Error())
 	}
 
 	if s.userTable[1] != user {
 		t.Fatalf("内容一致时不该重建记录")
+	}
+}
+
+func TestPlanApplyNamesTheActionForEachRow(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		before *model.UserInfo
+		target *model.UserInfo
+		want   applyAction
+	}{
+		{"表里没有这个 uid 是建号", nil, &model.UserInfo{Uid: 3, Port: 1003, Passwd: "r", Enable: 1}, applyAdd},
+		{"内容一致什么都不动", &model.UserInfo{Uid: 1, Port: 1001, Passwd: "p", Enable: 1}, &model.UserInfo{Uid: 1, Port: 1001, Passwd: "p", Enable: 1}, applyNone},
+		{"端口变了是换号", &model.UserInfo{Uid: 2, Port: 1002, Passwd: "q", Enable: 1}, &model.UserInfo{Uid: 2, Port: 1004, Passwd: "q", Enable: 1}, applyEdit},
+		{"限速变了也是换号", &model.UserInfo{Uid: 2, Port: 1002, Passwd: "q", Limit: 0, Enable: 1}, &model.UserInfo{Uid: 2, Port: 1002, Passwd: "q", Limit: 1048576, Enable: 1}, applyEdit},
+		{"enable=0 且表里有行是摘号", &model.UserInfo{Uid: 1, Port: 1001, Passwd: "p", Enable: 1}, &model.UserInfo{Uid: 1, Port: 1001, Passwd: "p", Enable: 0}, applyRemove},
+		{"enable=0 但表里没行不算变更", nil, &model.UserInfo{Uid: 9, Port: 1009, Passwd: "z", Enable: 0}, applyNone},
+	} {
+		if got := planApply(tc.before, tc.target); got != tc.want {
+			t.Fatalf("%s: action = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// 日志要跟着实际动作走：全量下发里绝大多数账号是没变的，逐行记就成了「什么任务在刷 apply」查不清。
+// 这里只走不建监听器的分支（摘表里的行与不动），所以端口不用真的监听。
+func TestApplyUsersLogsOnlyChangedRows(t *testing.T) {
+	var buf bytes.Buffer
+	out, level := logrus.StandardLogger().Out, logrus.GetLevel()
+	logrus.SetOutput(&buf)
+	logrus.SetLevel(logrus.InfoLevel)
+	t.Cleanup(func() {
+		logrus.SetOutput(out)
+		logrus.SetLevel(level)
+	})
+
+	s := NewShadowsocksrService()
+	s.userTable[1] = &model.UserInfo{Uid: 1, Port: 1001, Passwd: "p", Enable: 1}
+	s.userTable[2] = &model.UserInfo{Uid: 2, Port: 1002, Passwd: "q", Enable: 1}
+
+	applyLines := func() []string {
+		var hits []string
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if strings.Contains(line, "apply user ") {
+				hits = append(hits, line)
+			}
+		}
+		return hits
+	}
+
+	// 三个账号：1 没变、2 是 enable=0 要摘掉、3 本来就不在表里
+	if err := s.ApplyUsers(SourcePoll, []*model.UserInfo{
+		{Uid: 1, Port: 1001, Passwd: "p", Enable: 1},
+		{Uid: 2, Port: 1002, Passwd: "q", Enable: 0},
+		{Uid: 3, Port: 1003, Passwd: "r", Enable: 0},
+	}); err != nil {
+		t.Fatalf("下发失败: %s", err.Error())
+	}
+
+	lines := applyLines()
+	if len(lines) != 1 {
+		t.Fatalf("只有真的动了表的那一行该有日志: %q", buf.String())
+	}
+	for _, want := range []string{"apply user remove", "uid: 2", "source: poll"} {
+		if !strings.Contains(lines[0], want) {
+			t.Fatalf("日志行 %q 缺 %q", lines[0], want)
+		}
+	}
+	if strings.Contains(buf.String(), "apply users no change") {
+		t.Fatalf("这批动了账号，不该出现「没变动」的标记: %q", buf.String())
+	}
+
+	buf.Reset()
+
+	// 同一批原样重投：不逐行记，但要留一行「这批没动到任何人」，否则日志里看不出这一轮发生过什么
+	if err := s.ApplyUsers(SourcePoll, []*model.UserInfo{
+		{Uid: 1, Port: 1001, Passwd: "p", Enable: 1},
+	}); err != nil {
+		t.Fatalf("重投失败: %s", err.Error())
+	}
+	if got := applyLines(); len(got) != 0 {
+		t.Fatalf("内容一致的批次不该逐行产生日志: %q", buf.String())
+	}
+	marker := ""
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "apply users no change") {
+			marker = line
+		}
+	}
+	for _, want := range []string{"source: poll", "total: 1"} {
+		if !strings.Contains(marker, want) {
+			t.Fatalf("空转批次留下的标记缺 %q: %q", want, buf.String())
+		}
 	}
 }
 
