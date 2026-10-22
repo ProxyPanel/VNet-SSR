@@ -17,8 +17,8 @@ func Start() (err error) {
 }
 
 // Reload 用调用方在关闭之前取好的全量集合重建服务：取不到集合时调用方不会走到这里
-func Reload(users []*model.UserInfo) error {
-	if err := GetSSRManager().Restart(users); err != nil {
+func Reload(users []*model.UserInfo, gen uint64) error {
+	if err := GetSSRManager().Restart(users, gen); err != nil {
 		return err
 	}
 	if err := GetRuleService().LoadFromApi(); err != nil {

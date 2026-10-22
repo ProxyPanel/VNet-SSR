@@ -21,6 +21,10 @@ import (
 // ErrUDPLimitExceeded 是 UDP 限速的丢包判据：调用方应静默丢弃，不要按解包错误刷日志
 var ErrUDPLimitExceeded = errors.New("udp packet over speed limit")
 
+// ErrUDPDrop 是协议层认证失败/短包的丢包判据：这条数据报不能归属任何账号，
+// 调用方要在记账与限速之前静默丢弃，不能当成转发请求
+var ErrUDPDrop = errors.New("udp packet dropped before authentication")
+
 type ILimiter interface {
 	DownLimit(int, int) error
 	UpLimit(int, int) error
@@ -373,6 +377,11 @@ func (ssrd *ShadowsocksRDecorate) ReadFrom() (data, uid []byte, addr net.Addr, e
 	ssrd.udpProtoMu.Unlock()
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	// 流密码没有完整性校验：任意密文都能解出字节，协议 MAC 才是认证判据。
+	// 空结果代表这条数据报没通过认证（或短到无法归属），既不能记账也不能扣限速
+	if len(result) == 0 {
+		return nil, nil, nil, ErrUDPDrop
 	}
 	// update upload traffic
 	if ssrd.single == 1 && ssrd.TrafficReport != nil {

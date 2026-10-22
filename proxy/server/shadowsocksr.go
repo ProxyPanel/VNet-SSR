@@ -196,13 +196,14 @@ func (ssr *ShadowsocksRProxy) StartUDP() error {
 				return
 			}
 			ssrd.TrafficReport = ssr.TrafficReport
+			ssrd.SetLimter(ssr.ILimiter)
 			// 参数单位是秒（MapTimeCopy 里乘 time.Second）：同一客户端会话空闲 30 秒即拆表
 			udpMap := NewShadowsocksRUDPMap(30)
 			for {
 				data, uid, addr, err := ssrd.ReadFrom()
 				if err != nil {
-					// 限速丢包是正常路径，不能按解包错误刷 error 日志
-					if errors.Is(err, network.ErrUDPLimitExceeded) {
+					// 限速丢包与未认证数据报都是正常路径，不能按解包错误刷 error 日志
+					if errors.Is(err, network.ErrUDPLimitExceeded) || errors.Is(err, network.ErrUDPDrop) {
 						continue
 					}
 					if errors.Is(err, net.ErrClosed) {

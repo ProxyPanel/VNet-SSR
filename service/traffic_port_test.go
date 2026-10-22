@@ -123,3 +123,40 @@ func TestHeldTrafficFlushesAfterTimeout(t *testing.T) {
 		t.Fatalf("滞留满上限后应强制上报这一行, 实际 %+v", rows)
 	}
 }
+
+// 账号被禁用/删除后会从用户表摘掉，但它的滞留行仍会每分钟被 retain 一次。
+// 计时器不能被「表里没这个人」的清理删掉，否则不足门槛的尾巴永远等不到 10 分钟强制上报，
+// 进程退出时 flushReports 也带不走，且这行会一直留在内存里。
+func TestHeldTrafficTimerSurvivesAccountRemoval(t *testing.T) {
+	s := newPortUser()
+
+	s.Upload(30007, 1024)
+	if rows := s.ReportTraffic(); len(rows) != 0 {
+		t.Fatalf("1KiB 不足门槛, 不该上报, 实际 %+v", rows)
+	}
+
+	// 账号被禁用（enable=0）或删除后从用户表摘掉
+	delete(s.userTable, 7)
+	delete(s.identityIndex, 30007)
+
+	// 下一拍：尾巴仍在门槛下被留账，计时器必须保留
+	if rows := s.ReportTraffic(); len(rows) != 0 {
+		t.Fatalf("不足门槛的尾巴不该立刻上报, 实际 %+v", rows)
+	}
+	if _, held := s.trafficSince[7]; !held {
+		t.Fatal("账号摘掉后滞留计时被清理，尾巴永远等不到强制上报")
+	}
+
+	// 时间到：强制上报，并释放计时器与滞留行
+	s.trafficSince[7] = time.Now().Add(-11 * time.Minute)
+	rows := s.ReportTraffic()
+	if len(rows) != 1 || rows[0].Uid != 7 || rows[0].Upload != 1024 {
+		t.Fatalf("滞留满上限后应强制上报这条尾巴, 实际 %+v", rows)
+	}
+	if _, held := s.trafficSince[7]; held {
+		t.Fatalf("上报后滞留计时该释放: %+v", s.trafficSince)
+	}
+	if _, lingering := s.traffic[7]; lingering {
+		t.Fatalf("上报后滞留行不该继续留在本地: %+v", s.traffic[7])
+	}
+}

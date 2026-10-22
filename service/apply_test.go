@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ProxyPanel/VNet-SSR/api/client"
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/ProxyPanel/VNet-SSR/model"
 	"github.com/sirupsen/logrus"
@@ -382,4 +383,52 @@ func TestUserTableReadersConcurrentWithSync(t *testing.T) {
 			_ = s.GetUids()
 		}
 	}
+}
+
+// 重载取数最长约 25 秒（3 次 × 5 秒超时 + 2 次 5 秒退避），这期间落地的推送删号/禁用
+// 会被取数前的旧快照重建回来，直到下一轮 5 分钟同步才消失。Restart 必须在 usersGenMu
+// 内比对取数前记下的代次；不一致时内存表才是新状态，不能拿快照覆盖它。
+func TestRestartKeepsPushThatLandedDuringFetch(t *testing.T) {
+	prevHost := core.GetApp().Host()
+	core.GetApp().SetHost("127.0.0.1")
+	prevAPIHost := client.Host
+	// 上报协程的第一次心跳会打面板；指向一个拒连的本地端口，别让用例等 5 秒超时
+	client.Host = "http://127.0.0.1:1"
+	t.Cleanup(func() {
+		core.GetApp().SetHost(prevHost)
+		client.Host = prevAPIHost
+	})
+
+	s := NewShadowsocksrService()
+	t.Cleanup(func() { _ = s.Close() })
+
+	port := freeTCPPort(t)
+	stale := []*model.UserInfo{{Uid: 1, Port: port, Passwd: "p", Enable: 1}}
+	s.userTable[1] = stale[0]
+	s.identityIndex[port] = 1
+
+	gen := s.UsersGeneration()
+	if err := s.DelUserFromPush(1); err != nil {
+		t.Fatalf("推送删号失败: %s", err.Error())
+	}
+
+	if err := s.Restart(stale, gen); err != nil {
+		t.Fatalf("重载失败: %s", err.Error())
+	}
+	if s.userTable[1] != nil {
+		t.Fatal("取数期间落地的删除被旧快照覆盖，账号被重建")
+	}
+	if s.lookupProxy(port) != nil {
+		t.Fatalf("旧快照把已删账号的端口又监听起来了: %v", port)
+	}
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
 }

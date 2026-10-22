@@ -110,6 +110,13 @@ func (a *AuthAes128Sha1) SetServerInfo(s ServerInfo) {
 	}
 }
 
+// Dispose 连接关闭时释放计数桶里的名额；与 auth_chain/auth_sha1_v4 同形
+func (a *AuthAes128Sha1) Dispose() {
+	if service := core.GetApp().GetObfsProtocolService(); service != nil {
+		service.Remove(string(a.SessionKey()), a.ClientID)
+	}
+}
+
 func (a *AuthAes128Sha1) trapezoidRandomFloat(d float64) float64 {
 	if d == 0 {
 		return randomx.Float64()

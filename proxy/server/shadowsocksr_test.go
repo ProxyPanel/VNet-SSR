@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ProxyPanel/VNet-SSR/common/ciphers"
 	"github.com/ProxyPanel/VNet-SSR/common/obfs"
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/ProxyPanel/VNet-SSR/model"
@@ -306,6 +308,39 @@ func (w *logWatcher) crashes() []string {
 	return hits
 }
 
+func (w *logWatcher) count(substr string) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := 0
+	for _, entry := range w.entries {
+		if strings.Contains(entry, substr) {
+			n++
+		}
+	}
+	return n
+}
+
+type fakeUDPDPILimiter struct {
+	mu       sync.Mutex
+	allowUps int
+}
+
+func (l *fakeUDPDPILimiter) DownLimit(int, int) error { return nil }
+func (l *fakeUDPDPILimiter) UpLimit(int, int) error   { return nil }
+func (l *fakeUDPDPILimiter) AllowUp(int, int) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.allowUps++
+	return true
+}
+func (l *fakeUDPDPILimiter) AllowDown(int, int) bool { return true }
+
+func (l *fakeUDPDPILimiter) allows() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.allowUps
+}
+
 // 未认证的短 UDP 包会走到身份协议的解包入口：长度不足时必须在入口拒绝，
 // 否则 panic 被 StartUDP 的 recover 兜住后读协程直接退出，端口从此不再处理 UDP
 func TestUDPShortDatagramDoesNotKillReader(t *testing.T) {
@@ -355,5 +390,118 @@ func TestUDPWithUnsupportedAlgorithmDoesNotPanic(t *testing.T) {
 
 	if hits := watcher.crashes(); len(hits) > 0 {
 		t.Fatalf("UDP 路径上出现了 panic: %s", hits[0])
+	}
+}
+
+// 未认证的数据报在协议 MAC 上就会被拒：它既不能记到端口对应的账号上（多端口下这个端口就是账号，
+// 第三方发垃圾就能替人刷上传），也不能按转发错误刷 Error 日志（可被用来撑大日志/吃满磁盘）。
+func TestUnauthenticatedUDPDatagramIsDroppedSilently(t *testing.T) {
+	port := freeUDPPort(t)
+	ssr := newTCPProxy(t, port, "aes-256-cfb", &fakeFirewall{})
+	ssr.Protocol = "auth_chain_a"
+	ssr.ShadowsocksRArgs.TCPSwitch = "false"
+	ssr.ShadowsocksRArgs.UDPSwitch = "true"
+	limiter := &fakeUDPDPILimiter{}
+	ssr.ILimiter = limiter
+
+	logger := logrus.StandardLogger()
+	oldHooks := logger.ReplaceHooks(logrus.LevelHooks{})
+	watcher := &logWatcher{}
+	logger.AddHook(watcher)
+	t.Cleanup(func() { logger.ReplaceHooks(oldHooks) })
+
+	if err := ssr.Start(); err != nil {
+		t.Fatalf("Start 失败: %s", err.Error())
+	}
+
+	conn, err := net.Dial("udp", ssr.Listener.Addr)
+	if err != nil {
+		t.Fatalf("连 UDP 端口失败: %s", err.Error())
+	}
+	defer conn.Close()
+	if _, err := conn.Write(bytes.Repeat([]byte{0x5a}, 64)); err != nil {
+		t.Fatalf("发包失败: %s", err.Error())
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	rep := ssr.TrafficReport.(*fakeReport)
+	rep.mu.Lock()
+	uploaded := rep.uploaded
+	rep.mu.Unlock()
+
+	if uploaded != 0 {
+		t.Fatalf("未认证的 UDP 包被记了 %d 字节上传", uploaded)
+	}
+	if n := watcher.count("read address error") + watcher.count("read udp error"); n != 0 {
+		t.Fatalf("未认证的 UDP 包刷了 %d 条 Error 日志", n)
+	}
+	if limiter.allows() != 0 {
+		t.Fatalf("未认证的 UDP 包被扣了 %d 次限速", limiter.allows())
+	}
+}
+
+// StartUDP 必须把 proxy 上的限速器交给装饰器：漏了这一句时 AllowUp/AllowDown 恒为 nil 判断，
+// 面板下发的 UDP 限速完全不生效。
+func TestAuthenticatedUDPDatagramGoesThroughLimiter(t *testing.T) {
+	port := freeUDPPort(t)
+	ssr := newTCPProxy(t, port, "aes-256-cfb", &fakeFirewall{})
+	ssr.Protocol = "auth_chain_a"
+	ssr.ShadowsocksRArgs.TCPSwitch = "false"
+	ssr.ShadowsocksRArgs.UDPSwitch = "true"
+	limiter := &fakeUDPDPILimiter{}
+	ssr.ILimiter = limiter
+
+	if err := ssr.Start(); err != nil {
+		t.Fatalf("Start 失败: %s", err.Error())
+	}
+
+	enc, err := ciphers.NewEncryptor("aes-256-cfb", "killer")
+	if err != nil {
+		t.Fatalf("建加密器失败: %s", err.Error())
+	}
+	client, err := obfs.GetObfs("auth_chain_a")
+	if err != nil {
+		t.Fatalf("取客户端协议失败: %s", err.Error())
+	}
+	s := obfs.NewServerInfo()
+	s.SetKey(enc.Key)
+	s.SetProtocolParam("")
+	s.SetSingle(0)
+	client.SetServerInfo(s)
+
+	packet, err := client.ClientUDPPreEncrypt([]byte("hello"))
+	if err != nil {
+		t.Fatalf("客户端 UDP 封装失败: %s", err.Error())
+	}
+	datagram, err := enc.EncryptAll(packet, enc.MustNewIV())
+	if err != nil {
+		t.Fatalf("加密失败: %s", err.Error())
+	}
+
+	conn, err := net.Dial("udp", ssr.Listener.Addr)
+	if err != nil {
+		t.Fatalf("连 UDP 端口失败: %s", err.Error())
+	}
+	defer conn.Close()
+	if _, err := conn.Write(datagram); err != nil {
+		t.Fatalf("发包失败: %s", err.Error())
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && limiter.allows() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if limiter.allows() == 0 {
+		t.Fatal("认证通过的 UDP 包没有过限速：StartUDP 没把 limiter 交给装饰器")
+	}
+
+	rep := ssr.TrafficReport.(*fakeReport)
+	rep.mu.Lock()
+	uploaded := rep.uploaded
+	rep.mu.Unlock()
+	if uploaded == 0 {
+		t.Fatal("认证通过的 UDP 包没有记账")
 	}
 }

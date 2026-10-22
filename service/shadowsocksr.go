@@ -76,7 +76,7 @@ type SSRManager struct {
 	// （单端口下它不参与监听、只当账号编号用，auth 包头的 4 字节装的就是它；面板建号时已保证端口全局唯一）
 	identityIndex map[int]int
 	// usersGenMu 串行化「推送落地 / 周期对账 / 重载重建」三条改用户表的路径；
-	// usersGen 在推送落地与重载完成时递增，用来丢弃取数期间已经过期的周期快照
+	// usersGen 在推送落地、周期同步与重载完成时递增，用来丢弃取数期间已经过期的快照
 	usersGenMu     sync.Mutex
 	usersGen       uint64
 	UpTime         time.Time
@@ -161,16 +161,6 @@ func (s *SSRManager) ReportTraffic() []*model.UserTraffic {
 		}
 		value.ReportID = reportID
 		convertReportData = append(convertReportData, value)
-	}
-
-	// 账号被删后它的滞留计时不会再有行来触发上报，顺手清掉
-	for uid := range s.trafficSince {
-		s.userTableLock.Lock()
-		_, exists := s.userTable[uid]
-		s.userTableLock.Unlock()
-		if !exists {
-			delete(s.trafficSince, uid)
-		}
 	}
 
 	return convertReportData
@@ -544,6 +534,8 @@ func (s *SSRManager) syncUsersLocked(users []*model.UserInfo) error {
 	if err := s.ApplyUsers(SourcePoll, users); err != nil {
 		errs = append(errs, err.Error())
 	}
+	// 同步落地也推进代次：取数期间跑了同步的重载快照同样已经过期，不能让它把结果覆盖回去
+	s.usersGen++
 	if len(errs) > 0 {
 		// 调用方据此作废 ETag；只在日志里留一行的话，下一次 304 会让这行失败永远没有重试机会
 		return errors.New(strings.Join(errs, "; "))
@@ -919,13 +911,18 @@ func (s *SSRManager) Close() error {
 	return closeErr
 }
 
-// Restart 用调用方取好的全量集合重建服务；集合必须在 Close 之前取，取不到时当前服务原样保留
-func (s *SSRManager) Restart(users []*model.UserInfo) error {
+// Restart 用调用方取好的全量集合重建服务；集合必须在 Close 之前取，取不到时当前服务原样保留。
+// gen 是取数前记下的代次：取数期间落地的推送/同步已经改过内存表，重建必须用那份新状态
+func (s *SSRManager) Restart(users []*model.UserInfo, gen uint64) error {
 	// 先停旧上报协程再拿 usersGenMu：一轮同步可能正卡在这把锁上，握着锁等它退出会互相等
 	s.stopReportLoop(10 * time.Second)
 
 	s.usersGenMu.Lock()
 	defer s.usersGenMu.Unlock()
+	if gen != s.usersGen {
+		log.Info("user table changed during reload fetch, rebuilding from live table")
+		users = s.GetUserList()
+	}
 	if err := s.Close(); err != nil {
 		return err
 	}

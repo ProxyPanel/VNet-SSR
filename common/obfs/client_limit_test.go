@@ -161,3 +161,38 @@ func TestIdentityBearingNamesActuallyResolvePacketIdentity(t *testing.T) {
 		}
 	}
 }
+
+// 连接关闭必须把计数桶里的 Ref 减回去：否则已断开的 clientID 在 LRU TTL 内仍算 active，
+// 同一账号攒够 MaxClient 个不同 clientID 后，新连接会撞 "no inactive client" 拒绝握手。
+// auth_chain/auth_sha1_v4 在 Dispose 里做了，auth_aes128 两代也必须同形。
+func TestDisposeReleasesConnectionSlot(t *testing.T) {
+	for _, method := range []string{"auth_aes128_md5", "auth_aes128_sha1", "auth_chain_a", "auth_sha1_v4"} {
+		service := NewObfsAuthChainData(method)
+		core.GetApp().SetObfsProtocolService(service)
+		service.SetMaxClient(1)
+
+		p, err := GetObfs(method)
+		if err != nil {
+			t.Fatalf("%s 未注册: %v", method, err)
+		}
+		s := NewServerInfo()
+		s.SetIdentity(binaryx.LEUint32ToBytes(1001))
+		s.SetProtocolParam("1")
+		p.SetServerInfo(s)
+
+		keyer, ok := p.(interface{ SessionKey() []byte })
+		if !ok {
+			t.Fatalf("%s 没有 SessionKey，说明它没嵌入 AuthBase", method)
+		}
+		key := keyer.SessionKey()
+		if !service.Insert(key, 0, 1) {
+			t.Fatalf("%s 首连接被拒", method)
+		}
+
+		p.Dispose()
+
+		if !service.Insert(key, 1, 2) {
+			t.Fatalf("%s 连接关闭后计数桶没释放，新 clientID 被拒", method)
+		}
+	}
+}

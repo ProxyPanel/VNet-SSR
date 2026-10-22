@@ -363,7 +363,9 @@ func NodeReload(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	// 先把新集合取到手再改配置：面板此刻不可达时保持原样，不把已经在跑的服务打空
+	// 先把新集合取到手再改配置：面板此刻不可达时保持原样，不把已经在跑的服务打空。
+	// 取数最长约 25 秒，期间落地的推送会让这份快照过期，重建前按取数前记的代次再判一次
+	gen := service.GetSSRManager().UsersGeneration()
 	users, err := client.GetUserList()
 	if err != nil {
 		fail(c, fmt.Errorf("%s: %w", "get user list failed, current services kept", err))
@@ -401,7 +403,7 @@ func NodeReload(c *gin.Context) {
 		log.Info("ignore client limit, because client_limit is zero, use default limit is 64")
 	}
 
-	reloadErr := service.Reload(users)
+	reloadErr := service.Reload(users, gen)
 	if reloadErr != nil {
 		client.MarkUserListStale()
 	}
