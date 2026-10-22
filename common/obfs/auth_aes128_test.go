@@ -81,7 +81,7 @@ func newAuthAes128SideWith(t *testing.T, method, keyStr string, key []byte, user
 
 	s := NewServerInfo()
 	for uidPack, passwd := range users {
-		s.GetUsers()[uidPack] = passwd
+		s.GetUsers().Set(uidPack, passwd)
 	}
 	s.SetClient(net.ParseIP("127.0.0.1"))
 	s.SetPort(8080)
@@ -129,6 +129,7 @@ func TestAuthAes128UnknownIdentityFailsQuietly(t *testing.T) {
 	known := map[string]string{string(binaryx.LEUint32ToBytes(1024)): "killer"}
 	client := newAuthAes128SideWith(t, "auth_aes128_md5", "killer", key, known, "9999:killer")
 	server := newAuthAes128SideWith(t, "auth_aes128_md5", "killer", key, known, "1024:killer")
+	server.GetServerInfo().SetSingle(1)
 
 	payload := bytes.Repeat([]byte("hello"), 20)
 	ciphered, err := client.ClientPreEncrypt(payload)

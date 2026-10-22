@@ -121,7 +121,7 @@ func TestIdentityBearingNamesActuallyResolvePacketIdentity(t *testing.T) {
 				t.Fatalf("%s 未注册: %v", name, err)
 			}
 			s := NewServerInfo()
-			s.GetUsers()[string(uid)] = "killer"
+			s.GetUsers().Set(string(uid), "killer")
 			s.SetProtocolParam("1024:killer")
 			s.SetClient(net.ParseIP("127.0.0.1"))
 			s.SetPort(8080)

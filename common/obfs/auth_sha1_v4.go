@@ -281,7 +281,9 @@ func (a *AuthSha1V4) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 }
 
 func (a *AuthSha1V4) Dispose() {
-	core.GetApp().GetObfsProtocolService().Remove(string(a.SessionKey()), a.ClientID)
+	if service := core.GetApp().GetObfsProtocolService(); service != nil {
+		service.Remove(string(a.SessionKey()), a.ClientID)
+	}
 }
 
 func beUint16(v uint16) []byte {

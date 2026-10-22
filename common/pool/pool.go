@@ -2,39 +2,33 @@ package pool
 
 import "sync"
 
-const UDP_MAX_PACKET_SIZE = 64 * 1204
-const BufferSize = 4096
-
-var (
-	poolMap map[int]*sync.Pool
-	getBufLock *sync.Mutex
+const (
+	BufferSize = 4096
+	// UDP_MAX_PACKET_SIZE 是单个 UDP 数据报的上限；UDP 转发必须按它收，4096 会把大响应静默截尾
+	UDP_MAX_PACKET_SIZE = 65535
 )
 
-func init() {
-	poolMap = make(map[int]*sync.Pool)
-	getBufLock = new(sync.Mutex)
-}
+var (
+	tcpPool = sync.Pool{New: func() interface{} { return make([]byte, BufferSize) }}
+	udpPool = sync.Pool{New: func() interface{} { return make([]byte, UDP_MAX_PACKET_SIZE) }}
+)
 
 func GetBuf() []byte {
-	pool := poolMap[BufferSize]
-	if pool == nil {
-		getBufLock.Lock()
-		poolMap[BufferSize] = &sync.Pool{
-			New: createAllocFunc(BufferSize),
-		}
-		getBufLock.Unlock()
-	}
-	buf := poolMap[BufferSize].Get().([]byte)
-	buf = buf[:cap(buf)]
-	return buf
+	return tcpPool.Get().([]byte)
 }
 
 func PutBuf(buf []byte) {
-	poolMap[cap(buf)].Put(buf)
+	if cap(buf) == BufferSize {
+		tcpPool.Put(buf[:BufferSize])
+	}
 }
 
-func createAllocFunc(size int) func() interface{} {
-	return func() interface{} {
-		return make([]byte, size)
+func GetUDPBuf() []byte {
+	return udpPool.Get().([]byte)
+}
+
+func PutUDPBuf(buf []byte) {
+	if cap(buf) == UDP_MAX_PACKET_SIZE {
+		udpPool.Put(buf[:UDP_MAX_PACKET_SIZE])
 	}
 }

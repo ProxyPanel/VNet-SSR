@@ -346,26 +346,33 @@ installVNet() {
   makeExecutable vnet
   makeSymlink
 
-  # Install VNet server config to /etc/vnet
+  # Install VNet server config to /etc/vnet；配置里有节点 key，只给 root 读
+  local old_umask
+  old_umask=$(umask)
+  umask 077
   if [[ ! -f "/etc/vnet/config.json" ]]; then
     mkdir -p /etc/vnet
     mkdir -p /var/log/vnet
     cp "${VSRC_ROOT}/config.json" "/etc/vnet/config.json"
     if [[ $? -ne 0 ]]; then
+      umask "$old_umask"
       colorEcho ${YELLOW} "Failed to create VNet configuration file. Please create it manually."
       return 1
     fi
   fi
+  chmod 600 "/etc/vnet/config.json"
 
   if [[ -n "${NODE_ID}" ]];then
         sed -i "s|\"api_host\"\:[^,]*|\"api_host\": \"${WEB_API}\"|g" "/etc/vnet/config.json"
         sed -i "s|\"node_id\"\:[^,]*|\"node_id\": ${NODE_ID}|g" "/etc/vnet/config.json"
         sed -i "s|\"key\"\:[^,]*|\"key\": \"${NODE_KEY}\"|g" "/etc/vnet/config.json"
+        chmod 600 "/etc/vnet/config.json"
 
         colorEcho ${BLUE} "web_api:${WEB_API}"
         colorEcho ${BLUE} "node_id:${NODE_ID}"
-        colorEcho ${BLUE} "node_key:${NODE_KEY}"
+        colorEcho ${BLUE} "node_key:${NODE_KEY:0:4}****（已写入 /etc/vnet/config.json）"
     fi
+  umask "$old_umask"
 
   return 0
 }

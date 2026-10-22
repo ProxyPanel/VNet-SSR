@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/ProxyPanel/VNet-SSR/model"
-	"github.com/ProxyPanel/VNet-SSR/utils/langx"
 	"github.com/ProxyPanel/VNet-SSR/utils/stringx"
 	"github.com/go-resty/resty/v2"
 	"github.com/sirupsen/logrus"
@@ -271,10 +270,11 @@ func parseUserList(response string) ([]*model.UserInfo, error) {
 
 // postJSON 序列化 payload、POST 到带节点 ID 的面板端点，按 envelope 的 status 判成败
 func postJSON(path string, payload interface{}) error {
-	value, err := post(fmt.Sprintf("%s/%s/%s", Host, path, strconv.Itoa(core.GetApp().NodeId())),
-		string(langx.Must(func() (interface{}, error) {
-			return json.Marshal(payload)
-		}).([]byte)))
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("%s: %w", "marshal payload", err)
+	}
+	value, err := post(fmt.Sprintf("%s/%s/%s", Host, path, strconv.Itoa(core.GetApp().NodeId())), string(body))
 	if err != nil {
 		return err
 	}

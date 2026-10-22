@@ -13,8 +13,8 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/ProxyPanel/VNet-SSR/model"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
 	"github.com/go-resty/resty/v2"
+	"github.com/tidwall/gjson"
 )
 
 const testPushSecret = "test-push-secret"
@@ -33,7 +33,7 @@ func newPushRouter(t *testing.T, secret string) *httptest.Server {
 
 func postTo(t *testing.T, url, secret, body string) (int, string) {
 	t.Helper()
-	resp, err := resty.New().SetTimeout(30 * time.Second).R().
+	resp, err := resty.New().SetTimeout(30*time.Second).R().
 		SetHeader("secret", secret).
 		SetHeader("Content-Type", "application/json").
 		SetBody(body).
@@ -46,7 +46,7 @@ func postTo(t *testing.T, url, secret, body string) (int, string) {
 
 func getFrom(t *testing.T, url, secret string) (int, string) {
 	t.Helper()
-	resp, err := resty.New().SetTimeout(30 * time.Second).R().
+	resp, err := resty.New().SetTimeout(30*time.Second).R().
 		SetHeader("secret", secret).
 		Get(url)
 	if err != nil {
@@ -103,6 +103,66 @@ func TestStartServerRefusesToListenWithoutSecret(t *testing.T) {
 	StopServer()
 }
 
+// 并发的重载或退出路径会重复停同一个 push server：第二次必须是 no-op 而不是 nil 解引用
+func TestStopServerIsIdempotent(t *testing.T) {
+	port := freePort(t)
+	if err := StartServer(port, testPushSecret); err != nil {
+		t.Fatalf("StartServer 失败: %s", err.Error())
+	}
+	if !waitForListen(port, 2*time.Second) {
+		t.Fatalf("push server 没起来")
+	}
+	if err := StopServer(); err != nil {
+		t.Fatalf("第一次 StopServer 失败: %s", err.Error())
+	}
+	if err := StopServer(); err != nil {
+		t.Fatalf("第二次 StopServer 不该报错: %s", err.Error())
+	}
+}
+
+// 换 push_port 时新旧监听必须真正交接：旧端口关掉、新端口开始服务
+func TestRestartPushListenerMovesPort(t *testing.T) {
+	oldPort := freePort(t)
+	if err := StartServer(oldPort, testPushSecret); err != nil {
+		t.Fatalf("StartServer 失败: %s", err.Error())
+	}
+	if !waitForListen(oldPort, 2*time.Second) {
+		t.Fatal("旧 push 端口没起来")
+	}
+	// 旧端口已被占住，此时取到的新端口不会与它相同
+	newPort := freePort(t)
+
+	ln, err := net.Listen("tcp", ":"+strconv.Itoa(newPort))
+	if err != nil {
+		t.Fatalf("预绑新端口失败: %s", err.Error())
+	}
+	restartPushListener(pushReloadSeq.Add(1), ln, testPushSecret, newPort)
+	if !waitForListen(newPort, 2*time.Second) {
+		t.Fatal("新 push 端口没起来")
+	}
+	if got := currentPushPort(); got != newPort {
+		t.Fatalf("runningPushPort = %d, want %d", got, newPort)
+	}
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(oldPort), 300*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("切换后旧 push 端口仍在监听")
+	}
+	if err := StopServer(); err != nil {
+		t.Fatalf("StopServer 失败: %s", err.Error())
+	}
+}
+
+// bind 同步失败要让调用方拿到错误，而不是只在后台日志里打一行、进程继续假装在线
+func TestStartServerRejectsInvalidConfig(t *testing.T) {
+	if err := StartServer(0, testPushSecret); err == nil {
+		t.Fatal("端口 0 被接受了")
+	}
+	if err := StartServer(30108, ""); err != ErrEmptySecret {
+		t.Fatalf("空 secret 的错误 = %v, want ErrEmptySecret", err)
+	}
+}
+
 func TestNodeReloadRejectsEmptySecret(t *testing.T) {
 	core.GetApp().SetNodeInfo(&model.NodeInfo{ID: 7, Port: "8388", Secret: testPushSecret, PushPort: 30108})
 	panel := newPushRouter(t, testPushSecret)
@@ -125,38 +185,55 @@ func TestNodeReloadRejectsEmptySecret(t *testing.T) {
 // 单端口只有一个监听端口，账号全靠鉴权包头那 4 字节区分：配上不带身份的协议时
 // 节点认不出谁在连，流量、在线与限速全部落空，必须在落地前拒掉
 func TestValidateNodeInfoRejectsSinglePortWithoutIdentity(t *testing.T) {
-	if err := ValidateNodeInfo(&model.NodeInfo{Secret: testPushSecret, Single: 1, Protocol: "auth_chain_a"}); err != nil {
+	base := func(single int, protocol string) *model.NodeInfo {
+		return &model.NodeInfo{Secret: testPushSecret, Single: single, Protocol: protocol, Port: "8388", PushPort: 30108}
+	}
+	if err := ValidateNodeInfo(base(1, "auth_chain_a")); err != nil {
 		t.Fatalf("单端口 + auth_chain_a 不该被拒: %v", err)
 	}
 	// 多端口不受这条判据约束：账号由各自的监听端口区分
-	if err := ValidateNodeInfo(&model.NodeInfo{Secret: testPushSecret, Single: 0, Protocol: "origin"}); err != nil {
+	if err := ValidateNodeInfo(base(0, "origin")); err != nil {
 		t.Fatalf("多端口 + origin 不该被拒: %v", err)
 	}
 
 	for _, protocol := range []string{"origin", "plain", "http_simple", "http_post", "tls1.2_ticket_auth", "auth_sha1_v4", ""} {
-		err := ValidateNodeInfo(&model.NodeInfo{Secret: testPushSecret, Single: 1, Protocol: protocol})
-		if err == nil {
+		if err := ValidateNodeInfo(base(1, protocol)); err == nil {
 			t.Fatalf("单端口 + %q 被接受了，节点将无法归属任何流量", protocol)
 		}
 	}
 
 	// secret 那条判据不能被这条改动吃掉
-	if err := ValidateNodeInfo(&model.NodeInfo{Single: 1, Protocol: "auth_chain_a"}); err != ErrEmptySecret {
+	if err := ValidateNodeInfo(&model.NodeInfo{Single: 1, Protocol: "auth_chain_a", PushPort: 30108}); err != ErrEmptySecret {
 		t.Fatalf("空 secret 的判据变了: %v", err)
+	}
+
+	// push_port 0 会让 StartServer 绑一个随机端口，面板再也推不到；单端口 port 列表同理
+	invalid := base(1, "auth_chain_a")
+	invalid.PushPort = 0
+	if err := ValidateNodeInfo(invalid); err == nil {
+		t.Fatal("push_port=0 被接受了")
+	}
+	invalid = base(1, "auth_chain_a")
+	invalid.Port = "8388,not-a-port"
+	if err := ValidateNodeInfo(invalid); err == nil {
+		t.Fatal("非法单端口列表被接受了")
 	}
 }
 
 // 分组模式带不了 UDP 数据报：每个包都是自带 IV 的一次性加解密，不足一块的尾巴没有下一批可等。
 // TCP 字节流按块边界走是可以的，所以只拒 UDP 那一半
 func TestValidateNodeInfoRejectsBlockCipherWithUDP(t *testing.T) {
-	if err := ValidateNodeInfo(&model.NodeInfo{Secret: testPushSecret, Method: "aes-128-cbc", IsUDP: 1}); err == nil {
+	base := func(method string, udp int) *model.NodeInfo {
+		return &model.NodeInfo{Secret: testPushSecret, Method: method, IsUDP: udp, PushPort: 30108}
+	}
+	if err := ValidateNodeInfo(base("aes-128-cbc", 1)); err == nil {
 		t.Fatal("aes-128-cbc + is_udp=1 被接受了，数据报会静默截尾")
 	}
-	if err := ValidateNodeInfo(&model.NodeInfo{Secret: testPushSecret, Method: "aes-128-cbc"}); err != nil {
+	if err := ValidateNodeInfo(base("aes-128-cbc", 0)); err != nil {
 		t.Fatalf("走 TCP 的 aes-128-cbc 不该被拒: %v", err)
 	}
 	for _, method := range []string{"aes-256-cfb", "chacha20-ietf-poly1305", "none"} {
-		if err := ValidateNodeInfo(&model.NodeInfo{Secret: testPushSecret, Method: method, IsUDP: 1}); err != nil {
+		if err := ValidateNodeInfo(base(method, 1)); err != nil {
 			t.Fatalf("%s + UDP 不该被拒: %v", method, err)
 		}
 	}

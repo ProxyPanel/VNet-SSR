@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ProxyPanel/VNet-SSR/api/client"
@@ -77,6 +78,8 @@ type RuleService struct {
 	cache    *cache.LRU
 	reports  *cache.LRU
 	triggers *triggerQueue
+	// version 在规则集换入时递增：取判定期间换过规则的结果不再写回缓存
+	version atomic.Uint64
 }
 
 func NewRuleService() *RuleService {
@@ -138,6 +141,7 @@ func (r *RuleService) Load(rule *model.Rule) {
 	r.mode = rule.Model
 	r.rules = compiled
 	r.mu.Unlock()
+	r.version.Add(1)
 	// 旧规则下的判定与上报去重都即刻作废：规则换了一轮，违规该重新报
 	r.cache.Clear()
 	r.reports.Clear()
@@ -240,23 +244,23 @@ func (q *triggerQueue) drain() {
 			q.mu.Unlock()
 			return
 		}
+		// 先摘再发：发送期间队列满时 push 丢的是更旧的条目，不能再把正在发的这条也算进去
 		head := q.pending[0]
+		q.pending = q.pending[1:]
 		q.mu.Unlock()
 
 		if err := q.send(head); err != nil {
 			if !errors.Is(err, client.ErrRejected) {
-				log.Err(err) // 留在队首，下一拍重试；顺序保持，先违的规先入账
+				// 放回队首，下一拍重试；顺序保持，先违的规先入账
+				q.mu.Lock()
+				q.pending = append([]model.Trigger{head}, q.pending...)
+				q.mu.Unlock()
+				log.Err(err)
 				return
 			}
 			// 面板判定这条载荷永远不会接受：留在队首就是把整条审计链钉死，丢这一条并继续投后面的
 			log.Error("trigger rejected by panel, dropped (uid %d, reason %s): %s", head.Uid, head.Reason, err.Error())
 		}
-
-		q.mu.Lock()
-		if len(q.pending) > 0 {
-			q.pending = q.pending[1:]
-		}
-		q.mu.Unlock()
 	}
 }
 
@@ -272,9 +276,13 @@ func (r *RuleService) judgeCached(host string) (ruleId int, result bool) {
 		return cached.RuleId, cached.Result
 	}
 
+	version := r.version.Load()
 	ruleId, result = r.judge(host)
 
-	r.cache.Put(host, judgeResult{RuleId: ruleId, Result: result})
+	// 判定期间规则集换了就不再写回，否则会把按旧规则算出的结果留在缓存里
+	if r.version.Load() == version {
+		r.cache.Put(host, judgeResult{RuleId: ruleId, Result: result})
+	}
 
 	return ruleId, result
 }

@@ -2,12 +2,15 @@ package service
 
 import (
 	"bytes"
-	"github.com/ProxyPanel/VNet-SSR/core"
-	"github.com/ProxyPanel/VNet-SSR/model"
-	"github.com/sirupsen/logrus"
+	"errors"
+	"net"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ProxyPanel/VNet-SSR/core"
+	"github.com/ProxyPanel/VNet-SSR/model"
+	"github.com/sirupsen/logrus"
 )
 
 // 这些用例只走不建监听器的分支（同 uid 同内容视为无需变动、缺席即摘除、端口上本来没有进程），
@@ -156,6 +159,94 @@ func TestPlanApplyNamesTheActionForEachRow(t *testing.T) {
 			t.Fatalf("%s: action = %q, want %q", tc.name, got, tc.want)
 		}
 	}
+}
+
+// 删除是「落目标状态」而不是「执行一次动词」：同一 uid 重投必须成功
+func TestDelUserIsIdempotent(t *testing.T) {
+	s := NewShadowsocksrService()
+	s.userTable[1] = &model.UserInfo{Uid: 1, Port: 1001, Passwd: "p", Enable: 1}
+
+	if err := s.DelUser(1); err != nil {
+		t.Fatalf("首次删除失败: %s", err.Error())
+	}
+	if err := s.DelUser(1); err != nil {
+		t.Fatalf("重复删除不该失败: %s", err.Error())
+	}
+	if len(s.userTable) != 0 {
+		t.Fatalf("删除后用户表仍有残留: %+v", s.userTable)
+	}
+}
+
+// 批量删除里混入已不存在的 uid 不能回滚整批：否则丢失响应后的重投永远成功不了
+func TestDelUsersSkipsAbsentUID(t *testing.T) {
+	s := NewShadowsocksrService()
+	s.userTable[1] = &model.UserInfo{Uid: 1, Port: 1001, Passwd: "p", Enable: 1}
+
+	if err := s.DelUsers([]int{1, 2}); err != nil {
+		t.Fatalf("含缺席 uid 的批量删除不该失败: %s", err.Error())
+	}
+	if len(s.userTable) != 0 {
+		t.Fatalf("批量删除后用户表仍有残留: %+v", s.userTable)
+	}
+}
+
+// 周期同步取数期间有推送落地时，旧快照必须整份丢弃：否则新账号会被删掉、新密码会被覆盖回去
+func TestStaleUserSnapshotIsDiscarded(t *testing.T) {
+	s := NewShadowsocksrService()
+	s.userTable[1] = &model.UserInfo{Uid: 1, Port: 1001, Passwd: "p", Enable: 1}
+	gen := s.UsersGeneration()
+
+	if err := s.ApplyUsersFromPush([]*model.UserInfo{{Uid: 2, Port: 1002, Passwd: "q", Enable: 0}}); err != nil {
+		t.Fatalf("推送落地失败: %s", err.Error())
+	}
+	if err := s.SyncUsersIfUnchanged([]*model.UserInfo{}, gen); !errors.Is(err, ErrStaleUserSnapshot) {
+		t.Fatalf("取数期间的推送没有让快照作废: %v", err)
+	}
+	if s.userTable[1] == nil {
+		t.Fatal("旧快照仍然把本地用户删掉了")
+	}
+
+	// 当前代次的快照照常应用：缺席的 uid 被摘掉
+	if err := s.SyncUsersIfUnchanged([]*model.UserInfo{}, s.UsersGeneration()); err != nil {
+		t.Fatalf("当前代次快照应用失败: %s", err.Error())
+	}
+	if len(s.userTable) != 0 {
+		t.Fatalf("当前快照没有收敛本地用户表: %+v", s.userTable)
+	}
+}
+
+// Start 失败时不能把没有 listener、也没有用户行的 proxy 留在端口索引里，
+// 否则后续每次重试都撞「端口已占用」，直到整节点重载
+func TestAddUserBindFailureDoesNotLeakPortEntry(t *testing.T) {
+	prevHost := core.GetApp().Host()
+	core.GetApp().SetHost("127.0.0.1")
+	t.Cleanup(func() { core.GetApp().SetHost(prevHost) })
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	s := NewShadowsocksrService()
+	err = s.ApplyUsers(SourcePush, []*model.UserInfo{{Uid: 1, Port: port, Passwd: "p", Enable: 1}})
+	if err == nil {
+		t.Fatal("端口已被占用时 addUser 竟然成功了")
+	}
+	if got := s.lookupProxy(port); got != nil {
+		t.Fatalf("Start 失败后端口索引里留下了残条目: %+v", got)
+	}
+	if len(s.userTable) != 0 {
+		t.Fatalf("Start 失败后用户表里留下了残行: %+v", s.userTable)
+	}
+}
+
+// 退出路径可能被重复调用（信号处理与测试清理）：不能因为没启动过就 nil 解引用
+func TestShutdownWithoutStartIsIdempotent(t *testing.T) {
+	s := NewShadowsocksrService()
+	s.Shutdown()
+	s.Shutdown()
 }
 
 // 日志要跟着实际动作走：全量下发里绝大多数账号是没变的，逐行记就成了「什么任务在刷 apply」查不清。

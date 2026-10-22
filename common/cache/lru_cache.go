@@ -3,11 +3,13 @@ package cache
 import (
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type LRU struct {
 	*lrucache
+	stopOnce sync.Once
 }
 
 type lrucache struct {
@@ -17,7 +19,8 @@ type lrucache struct {
 }
 
 type lruelement struct {
-	Expired time.Time
+	// 到期时间用原子读写：Get 会续期，而缓存本身被多条连接协程与 janitor 同时访问
+	expired int64
 	Payload interface{}
 	TTL     time.Duration
 }
@@ -25,7 +28,7 @@ type lruelement struct {
 func (l *lrucache) Put(key interface{}, payload interface{}) {
 	l.mapping.Store(key, &lruelement{
 		Payload: payload,
-		Expired: time.Now().Add(l.TTL),
+		expired: time.Now().Add(l.TTL).UnixNano(),
 		TTL:     l.TTL,
 	})
 }
@@ -36,14 +39,13 @@ func (l *lrucache) Get(key interface{}) interface{} {
 		return nil
 	}
 	elm := item.(*lruelement)
-	// expired
-	if time.Since(elm.Expired) > 0 {
+	now := time.Now()
+	if now.UnixNano() > atomic.LoadInt64(&elm.expired) {
 		l.mapping.Delete(key)
 		return nil
 	}
-	// lru strategy
-	elm.Expired = time.Now().Add(elm.TTL)
-	l.mapping.Store(key, elm)
+	// 续期只改元素自身的原子字段，不回写 mapping：并发 Clear 之后不能再把旧元素塞回去
+	atomic.StoreInt64(&elm.expired, now.Add(elm.TTL).UnixNano())
 	return elm.Payload
 }
 
@@ -83,10 +85,11 @@ func (l *lrucache) Len() int {
 }
 
 func (l *lrucache) Clean() {
+	now := time.Now().UnixNano()
 	l.mapping.Range(func(k, v interface{}) bool {
 		// key := k.(string)
 		elm := v.(*lruelement)
-		if time.Since(elm.Expired) > 0 {
+		if now > atomic.LoadInt64(&elm.expired) {
 			l.mapping.Delete(k)
 		}
 		return true
@@ -112,7 +115,12 @@ func (j *lruJanitor) process(c *lrucache) {
 }
 
 func stopLruJanitor(c *LRU) {
-	c.lruJanitor.stop <- struct{}{}
+	c.stopOnce.Do(func() { close(c.lruJanitor.stop) })
+}
+
+// Stop 立刻停掉 janitor；桶被回收时用它，不能等 finalizer 排到哪次 GC
+func (l *LRU) Stop() {
+	stopLruJanitor(l)
 }
 
 // New return *Cache
@@ -126,7 +134,7 @@ func NewLruCache(interval time.Duration) *LRU {
 		TTL:        interval,
 	}
 	go j.process(c)
-	lru := &LRU{c}
+	lru := &LRU{lrucache: c}
 	// 终结器只在缓存被回收之后才停 janitor，丢弃缓存不等于立刻停掉那个协程
 	runtime.SetFinalizer(lru, stopLruJanitor)
 	return lru

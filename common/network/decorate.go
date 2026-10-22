@@ -8,6 +8,7 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/common"
 	"github.com/ProxyPanel/VNet-SSR/common/ciphers"
 	"github.com/ProxyPanel/VNet-SSR/common/obfs"
+	"github.com/ProxyPanel/VNet-SSR/common/pool"
 	"github.com/ProxyPanel/VNet-SSR/utils/addrx"
 	"github.com/ProxyPanel/VNet-SSR/utils/binaryx"
 	"github.com/sirupsen/logrus"
@@ -17,13 +18,20 @@ import (
 	"sync/atomic"
 )
 
+// ErrUDPLimitExceeded 是 UDP 限速的丢包判据：调用方应静默丢弃，不要按解包错误刷日志
+var ErrUDPLimitExceeded = errors.New("udp packet over speed limit")
+
 type ILimiter interface {
-	Wait(int, int) error
 	DownLimit(int, int) error
 	UpLimit(int, int) error
+	AllowUp(int, int) bool
+	AllowDown(int, int) bool
 }
 
-func NewShadowsocksRDecorate(request *Request, obfsMethod, cryptMethod, key, protocolMethod, obfsParam, protocolParam, host string, port int, isLocal bool, single int, users map[string]string) (ssrd *ShadowsocksRDecorate, err error) {
+func NewShadowsocksRDecorate(request *Request, obfsMethod, cryptMethod, key, protocolMethod, obfsParam, protocolParam, host string, port int, isLocal bool, single int, users *obfs.UserTable) (ssrd *ShadowsocksRDecorate, err error) {
+	if users == nil {
+		users = obfs.NewUserTable()
+	}
 	// init essential parameters
 	ssrd = &ShadowsocksRDecorate{
 		Request:       request,
@@ -86,18 +94,32 @@ type ShadowsocksRDecorate struct {
 	Port          int
 	ObfsParam     string
 	ProtocolParam string
-	Users         map[string]string
+	Users         *obfs.UserTable
 	Overhead      int
 	ISLocal       bool
 	recvBuf       *bytes.Buffer
 	single        int
 	common.TrafficReport
 	ILimiter
-	*sync.Mutex
+	// 发送方向（Write 与 Read 里的 sendback）共用同一套协议/加密/混淆状态，
+	// 两个协程必须串行；UDP 的 pre/post encrypt 也共用协议实例
+	sendMu     sync.Mutex
+	udpProtoMu sync.Mutex
 }
 
 func (ssrd *ShadowsocksRDecorate) SetLimter(limiter ILimiter) {
 	ssrd.ILimiter = limiter
+}
+
+// Close 先让协议释放连接计数，再关 socket：少了 Dispose，ClientQueue 的 Ref 只增不减
+func (ssrd *ShadowsocksRDecorate) Close() error {
+	if ssrd.protocol != nil {
+		ssrd.protocol.Dispose()
+	}
+	if ssrd.Request != nil {
+		return ssrd.Request.Close()
+	}
+	return nil
 }
 
 // PeekPlain 返回解密后已缓冲、尚未被上层读走的明文（只窥探不消耗）。
@@ -164,15 +186,9 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 	}
 
 	if needSendBack {
-		result, err := ssrd.obfs.ServerEncode([]byte{})
-		if err != nil {
+		if err := ssrd.writeObfsSendback(); err != nil {
 			return 0, err
 		}
-		n, err = ssrd.Conn.Write(result)
-		if err != nil {
-			return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate obfs sendback error.", ssrd.RequestID), err)
-		}
-		atomic.AddInt64(&ssrd.download, int64(n))
 		return ssrd.Read(buf)
 	}
 
@@ -212,42 +228,9 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 		return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate protocol post decrypt error.", ssrd.RequestID), err)
 	}
 	if sendback {
-		backdata, err := ssrd.protocol.ServerPreEncrypt([]byte{})
-		if logrus.GetLevel() == logrus.DebugLevel {
-			logrus.WithFields(logrus.Fields{
-				"backdata":  hex.EncodeToString(backdata),
-				"requestId": ssrd.RequestID,
-				//"LastServerHash":hex.EncodeToString(ssrd.protocol.(*obfs.AuthChainA).LastServerHash),
-			}).Debug("shadowoscksr Read ServerPreEncrypt")
+		if err := ssrd.writeProtocolSendback(); err != nil {
+			return 0, err
 		}
-		if err != nil {
-			return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate protocol pre encode error.", ssrd.RequestID), err)
-		}
-		backdata, err = ssrd.encryptor.Encrypt(backdata)
-		if err != nil {
-			return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate encrypter encrypt error.", ssrd.RequestID), err)
-		}
-		if logrus.GetLevel() == logrus.DebugLevel {
-			logrus.WithFields(logrus.Fields{
-				"ReadEncryptData": hex.EncodeToString(backdata),
-				"requestId":       ssrd.RequestID,
-			}).Debug("shadowoscksr Read Encrypt")
-		}
-		backdata, err = ssrd.obfs.ServerEncode(backdata)
-		if err != nil {
-			return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate obfs service encode error.", ssrd.RequestID), err)
-		}
-		if logrus.GetLevel() == logrus.DebugLevel {
-			logrus.WithFields(logrus.Fields{
-				"ReadServerEncodeData": hex.EncodeToString(backdata),
-				"requestId":            ssrd.RequestID,
-			}).Debug("shadowoscksr Read ServerEncode")
-		}
-		n, err = ssrd.Conn.Write(backdata)
-		if err != nil {
-			return 0, fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate obfs sendback error.", ssrd.RequestID), err)
-		}
-		atomic.AddInt64(&ssrd.download, int64(n))
 	}
 	// 计数器在读写两条路径上都会被 atomic 累加，取走时也必须原子换出，否则与对端 goroutine 竞态
 	if ssrd.TrafficReport != nil && ssrd.Identity != 0 {
@@ -263,6 +246,67 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 	return n, err
 }
 
+// writeObfsSendback 与 Write 共用 obfs 的发送状态，必须走同一把 sendMu
+func (ssrd *ShadowsocksRDecorate) writeObfsSendback() error {
+	ssrd.sendMu.Lock()
+	defer ssrd.sendMu.Unlock()
+
+	result, err := ssrd.obfs.ServerEncode([]byte{})
+	if err != nil {
+		return err
+	}
+	n, err := ssrd.Conn.Write(result)
+	if err != nil {
+		return fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate obfs sendback error.", ssrd.RequestID), err)
+	}
+	atomic.AddInt64(&ssrd.download, int64(n))
+	return nil
+}
+
+// writeProtocolSendback 与 Write 共用同一套 protocol/encryptor/obfs 发送状态；
+// 空帧触发的回包与下载方向的数据帧必须严格串行，否则 keystream 与帧序都会交错
+func (ssrd *ShadowsocksRDecorate) writeProtocolSendback() error {
+	ssrd.sendMu.Lock()
+	defer ssrd.sendMu.Unlock()
+
+	backdata, err := ssrd.protocol.ServerPreEncrypt([]byte{})
+	if logrus.GetLevel() == logrus.DebugLevel {
+		logrus.WithFields(logrus.Fields{
+			"backdata":  hex.EncodeToString(backdata),
+			"requestId": ssrd.RequestID,
+		}).Debug("shadowoscksr Read ServerPreEncrypt")
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate protocol pre encode error.", ssrd.RequestID), err)
+	}
+	backdata, err = ssrd.encryptor.Encrypt(backdata)
+	if err != nil {
+		return fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate encrypter encrypt error.", ssrd.RequestID), err)
+	}
+	if logrus.GetLevel() == logrus.DebugLevel {
+		logrus.WithFields(logrus.Fields{
+			"ReadEncryptData": hex.EncodeToString(backdata),
+			"requestId":       ssrd.RequestID,
+		}).Debug("shadowoscksr Read Encrypt")
+	}
+	backdata, err = ssrd.obfs.ServerEncode(backdata)
+	if err != nil {
+		return fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate obfs service encode error.", ssrd.RequestID), err)
+	}
+	if logrus.GetLevel() == logrus.DebugLevel {
+		logrus.WithFields(logrus.Fields{
+			"ReadServerEncodeData": hex.EncodeToString(backdata),
+			"requestId":            ssrd.RequestID,
+		}).Debug("shadowoscksr Read ServerEncode")
+	}
+	n, err := ssrd.Conn.Write(backdata)
+	if err != nil {
+		return fmt.Errorf("%s: %w", fmt.Sprintf("[%s] ShadowsocksRDecorate obfs sendback error.", ssrd.RequestID), err)
+	}
+	atomic.AddInt64(&ssrd.download, int64(n))
+	return nil
+}
+
 func (ssrd *ShadowsocksRDecorate) Write(buf []byte) (n int, err error) {
 	defer func() {
 		if ssrd.ILimiter != nil {
@@ -271,6 +315,9 @@ func (ssrd *ShadowsocksRDecorate) Write(buf []byte) (n int, err error) {
 			}
 		}
 	}()
+
+	ssrd.sendMu.Lock()
+	defer ssrd.sendMu.Unlock()
 
 	data, err := ssrd.protocol.ServerPreEncrypt(buf)
 	if err != nil {
@@ -300,9 +347,18 @@ func (ssrd *ShadowsocksRDecorate) Write(buf []byte) (n int, err error) {
 }
 
 func (ssrd *ShadowsocksRDecorate) ReadFrom() (data, uid []byte, addr net.Addr, err error) {
+	// 单个数据报解不出来只该丢这一包：协议解包任何一处 panic 都会带走整个端口的 UDP 读协程
+	defer func() {
+		if r := recover(); r != nil {
+			logrus.Errorf("udp packet decode panic, requestId: %s: %v", ssrd.RequestID, r)
+			data, uid, addr, err = nil, nil, nil, errors.New("udp packet decode panic")
+		}
+	}()
+
 	// 65535：SS UDP 报文本身上限是它，前面还要加 IV/obfs/protocol/AEAD 开销，
 	// 用 2048 收包会让大报文在 socket 层就被砍尾，解密后拿到的是残缺数据
-	p := make([]byte, 65535)
+	p := pool.GetUDPBuf()
+	defer pool.PutUDPBuf(p)
 	n, addr, err := ssrd.PacketConn.ReadFrom(p)
 	if err != nil {
 		return nil, nil, nil, err
@@ -311,8 +367,10 @@ func (ssrd *ShadowsocksRDecorate) ReadFrom() (data, uid []byte, addr net.Addr, e
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	ssrd.udpProtoMu.Lock()
 	ssrd.protocol.GetServerInfo().SetIv(iv)
 	result, uidPack, err := ssrd.protocol.ServerUDPPostDecrypt(data)
+	ssrd.udpProtoMu.Unlock()
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -324,12 +382,27 @@ func (ssrd *ShadowsocksRDecorate) ReadFrom() (data, uid []byte, addr net.Addr, e
 		ssrd.TrafficReport.Upload(ssrd.Identity, int64(n))
 		uidPack = string(binaryx.LEUint32ToBytes(uint32(ssrd.Identity)))
 	}
+	if ssrd.ILimiter != nil {
+		identity := ssrd.Identity
+		if ssrd.single == 1 {
+			identity = int(binaryx.LEBytesToUInt32([]byte(uidPack)))
+		}
+		if !ssrd.ILimiter.AllowUp(identity, n) {
+			return nil, nil, nil, ErrUDPLimitExceeded
+		}
+	}
 	return result, []byte(uidPack), addr, err
 
 }
 
 func (ssrd *ShadowsocksRDecorate) WriteTo(p, uid []byte, addr net.Addr) error {
+	if ssrd.ILimiter != nil && !ssrd.ILimiter.AllowDown(int(binaryx.LEBytesToUInt32([]byte(uid))), len(p)) {
+		return nil
+	}
+	// 每个客户端的回包协程共用同一个协议实例，补长用的 RandomServer 在实例内部
+	ssrd.udpProtoMu.Lock()
 	data, err := ssrd.protocol.ServerUDPPreEncrypt(p, uid)
+	ssrd.udpProtoMu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -370,6 +443,7 @@ func (ssrd *ShadowsocksRDecorate) getServerInfo(isObfs bool) obfs.ServerInfo {
 	serverInfo.SetOverhead(ssrd.Overhead)
 	serverInfo.SetUpdateUserFunc(ssrd.UpdateUser)
 	serverInfo.SetUsers(ssrd.Users)
+	serverInfo.SetSingle(ssrd.single)
 	// 单端口下这里还是空的，等 auth 包解出身份后由会话自己带上；多端口下就是本端口
 	if ssrd.Identity != 0 {
 		serverInfo.SetIdentity(binaryx.LEUint32ToBytes(uint32(ssrd.Identity)))

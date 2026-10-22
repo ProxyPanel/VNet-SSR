@@ -63,9 +63,14 @@ func main() {
 			panic(err)
 		}
 
-		server.StartServer(nodeInfo.PushPort, nodeInfo.Secret)
+		if err := server.StartServer(nodeInfo.PushPort, nodeInfo.Secret); err != nil {
+			logrus.Fatal(err)
+		}
 		go probeEgress()
-		osx.WaitSignal()
+		sig := osx.WaitSignal()
+		logrus.Infof("received signal %v, shutting down", sig)
+		_ = server.StopServer()
+		service.GetSSRManager().Shutdown()
 	})
 }
 

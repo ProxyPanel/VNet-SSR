@@ -26,7 +26,7 @@ func newChainSide(t *testing.T, method string, users map[string]string, param st
 	}
 	s := NewServerInfo()
 	for uidPack, passwd := range users {
-		s.GetUsers()[uidPack] = passwd
+		s.GetUsers().Set(uidPack, passwd)
 	}
 	s.SetPort(8080)
 	s.SetProtocolParam(param)
@@ -73,6 +73,7 @@ func TestAuthChainUnknownIdentityFailsQuietly(t *testing.T) {
 	known := map[string]string{string(binaryx.LEUint32ToBytes(1024)): "killer"}
 	client := newChainSide(t, "auth_chain_a", known, "9999:killer")
 	server := newChainSide(t, "auth_chain_a", known, "1024:killer")
+	server.GetServerInfo().SetSingle(1)
 
 	payload := bytes.Repeat([]byte("m"), 60)
 	encoded, err := client.ClientPreEncrypt(payload)

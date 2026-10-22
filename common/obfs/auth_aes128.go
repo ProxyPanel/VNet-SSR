@@ -344,11 +344,11 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 		// AddUser(identity) 打包，UpdateUser 也把它写回会话身份。
 		// 空密码不算账号：写入侧就拒绝空密码（等于开放账号），表里出现它只能是手改配置，按不认识处理
 		uidPack := a.RecvBuf[7:11]
-		if passwd := a.GetServerInfo().GetUsers()[string(uidPack)]; passwd != "" {
+		if passwd := a.GetServerInfo().GetUsers().Lookup(string(uidPack)); passwd != "" {
 			a.UserID = uidPack
 			a.UserKey = hashSum([]byte(passwd), a.HashFunc)
 			a.GetServerInfo().UpdateUser(uidPack)
-		} else if len(a.GetServerInfo().GetUsers()) == 0 {
+		} else if a.GetServerInfo().GetSingle() != 1 {
 			// 多端口：每个监听端口自己就是一个账号，密码表恒空，两端都按本端口密钥算会话 key，
 			// 包里的身份编号随包随机、不参与记账
 			a.UserKey = a.GetServerInfo().GetKey()
@@ -510,14 +510,18 @@ func (a *AuthAes128Sha1) ServerUDPPreEncrypt(buf, uid []byte) ([]byte, error) {
 }
 
 func (a *AuthAes128Sha1) ServerUDPPostDecrypt(buf []byte) ([]byte, string, error) {
+	// 未认证的 UDP 短包会带着任意长度走到这里，先按协议最小头长拒绝
+	if len(buf) < 8 {
+		return []byte{}, "", nil
+	}
 	var userKey []byte
 	uidPack := buf[len(buf)-8 : len(buf)-4]
-	if passwd := a.GetServerInfo().GetUsers()[string(uidPack)]; passwd != "" {
+	if passwd := a.GetServerInfo().GetUsers().Lookup(string(uidPack)); passwd != "" {
 		userKey = hashSum([]byte(passwd), a.HashFunc)
 	} else {
 		// 认不出这个身份就不能把它当账号带出去：调用方按返回的 uid 记账与回包
 		uidPack = nil
-		if len(a.GetServerInfo().GetUsers()) == 0 {
+		if a.GetServerInfo().GetSingle() != 1 {
 			// 多端口：本端口自己就是账号，两端都按本端口密钥封包
 			userKey = a.GetServerInfo().GetKey()
 		} else {

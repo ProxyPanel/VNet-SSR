@@ -1,6 +1,8 @@
 package core
 
 import (
+	"sync/atomic"
+
 	"github.com/ProxyPanel/VNet-SSR/model"
 )
 
@@ -17,12 +19,17 @@ func GetApp() *App {
 }
 
 type App struct {
-	nodeInfo            *model.NodeInfo
+	// 重载协程写、每条连接读：指针与 interface 都必须原子存取
+	nodeInfo            atomic.Pointer[model.NodeInfo]
 	nodeId              int
 	apiHost             string
 	key                 string
 	host                string
-	obfsProtocolService ObfsProtocolService
+	obfsProtocolService atomic.Value // obfsServiceHolder
+}
+
+type obfsServiceHolder struct {
+	service ObfsProtocolService
 }
 
 func (a *App) Init() error {
@@ -46,11 +53,11 @@ func (a *App) SetKey(key string) {
 }
 
 func (a *App) SetNodeInfo(nodeInfo *model.NodeInfo) {
-	a.nodeInfo = nodeInfo
+	a.nodeInfo.Store(nodeInfo)
 }
 
 func (a *App) NodeInfo() *model.NodeInfo {
-	return a.nodeInfo
+	return a.nodeInfo.Load()
 }
 
 func (a *App) NodeId() int {
@@ -70,9 +77,10 @@ func (a *App) SetApiHost(apiHost string) {
 }
 
 func (a *App) SetObfsProtocolService(obfsProtocolService ObfsProtocolService) {
-	a.obfsProtocolService = obfsProtocolService
+	a.obfsProtocolService.Store(obfsServiceHolder{service: obfsProtocolService})
 }
 
 func (a *App) GetObfsProtocolService() ObfsProtocolService {
-	return a.obfsProtocolService
+	holder, _ := a.obfsProtocolService.Load().(obfsServiceHolder)
+	return holder.service
 }

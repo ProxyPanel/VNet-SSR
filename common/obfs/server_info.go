@@ -39,8 +39,12 @@ type ServerInfo interface {
 	GetBufferSize() int
 	SetOverhead(size int)
 	GetOverhead() int
-	GetUsers() map[string]string
-	SetUsers(users map[string]string)
+	GetUsers() *UserTable
+	SetUsers(users *UserTable)
+	// GetSingle 是节点的端口模式：1 = 单端口。密码表为空在两种模式下含义不同，
+	// 不能用表长推断模式
+	GetSingle() int
+	SetSingle(single int)
 	// Identity 是本会话默认归属的账号身份（4 字节小端）：多端口下就是监听端口，
 	// 供连接计数桶取键用；单端口下由 auth 包解出后写回会话，这里留空
 	GetIdentity() []byte
@@ -64,7 +68,8 @@ type serverInfo struct {
 	TCPMss        int
 	BufferSize    int
 	Overhead      int
-	Users         map[string]string
+	Users         *UserTable
+	Single        int
 	Identity      []byte
 	updateUser    func(uid []byte)
 }
@@ -74,7 +79,7 @@ func NewServerInfo() ServerInfo {
 	return &serverInfo{
 		TCPMss:  TCP_MSS,
 		HeadLen: DEFAULT_HEAD_LEN,
-		Users:   make(map[string]string),
+		Users:   NewUserTable(),
 	}
 }
 
@@ -190,12 +195,23 @@ func (s *serverInfo) GetOverhead() int {
 	return s.Overhead
 }
 
-func (s *serverInfo) GetUsers() map[string]string {
+func (s *serverInfo) GetUsers() *UserTable {
 	return s.Users
 }
 
-func (s *serverInfo) SetUsers(users map[string]string) {
+func (s *serverInfo) SetUsers(users *UserTable) {
+	if users == nil {
+		users = NewUserTable()
+	}
 	s.Users = users
+}
+
+func (s *serverInfo) GetSingle() int {
+	return s.Single
+}
+
+func (s *serverInfo) SetSingle(single int) {
+	s.Single = single
 }
 
 func (s *serverInfo) GetIdentity() []byte {

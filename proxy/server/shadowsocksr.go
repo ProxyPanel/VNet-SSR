@@ -3,10 +3,12 @@ package server
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/ProxyPanel/VNet-SSR/common"
 	"github.com/ProxyPanel/VNet-SSR/common/log"
 	"github.com/ProxyPanel/VNet-SSR/common/network"
+	"github.com/ProxyPanel/VNet-SSR/common/obfs"
 	"github.com/ProxyPanel/VNet-SSR/common/pool"
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/ProxyPanel/VNet-SSR/utils/binaryx"
@@ -36,9 +38,9 @@ type ShadowsocksRProxy struct {
 	Obfs              string `json:"obfs,omitempty"`
 	ObfsParam         string `json:"obfsParam,omitempty"`
 	*network.Listener `json:"-"`
-	Users             map[string]string `json:"users,omitempty"`
-	Status            string            `json:"status,omitempty"`
-	Single            int               `json:"single,omitempty"`
+	Users             *obfs.UserTable `json:"-"`
+	Status            string          `json:"status,omitempty"`
+	Single            int             `json:"single,omitempty"`
 	network.ILimiter
 	core.HostFirewall
 	common.TrafficReport `json:"-"`
@@ -103,7 +105,14 @@ func (ssr *ShadowsocksRProxy) StartTCP() error {
 				}
 			}()
 			defer ssrd.Close()
+			// 未认证连接不能无限占用 goroutine/fd：握手（含 auth 包）必须在监听器的超时内完成
+			if ssr.Timeout > 0 {
+				_ = ssrd.SetReadDeadline(time.Now().Add(ssr.Timeout))
+			}
 			addr, err := socksproxy.ReadAddr(ssrd)
+			if err == nil {
+				_ = ssrd.SetReadDeadline(time.Time{})
+			}
 			if err != nil {
 				// 空连接（健康检查、端口探测）在这里以 EOF 结束，不是错误；但两种情况都必须退出，
 				// 否则 addr 是 nil，往下走就是空指针
@@ -192,7 +201,11 @@ func (ssr *ShadowsocksRProxy) StartUDP() error {
 			for {
 				data, uid, addr, err := ssrd.ReadFrom()
 				if err != nil {
-					if strings.Contains(err.Error(), " use of closed network connection") {
+					// 限速丢包是正常路径，不能按解包错误刷 error 日志
+					if errors.Is(err, network.ErrUDPLimitExceeded) {
+						continue
+					}
+					if errors.Is(err, net.ErrClosed) {
 						logrus.WithFields(logrus.Fields{
 							"port": ssr.Port,
 						}).Info("udp close")
@@ -320,24 +333,18 @@ func (ssr *ShadowsocksRProxy) handleStageAddr(identity int, client, server, prox
 // AddUser 用端口做密码表的键：auth 包那 4 字节（SSR 线格式里叫 uid）按本面板约定装的就是端口
 func (ssr *ShadowsocksRProxy) AddUser(identity int, password string) {
 	if ssr.Users == nil {
-		ssr.Users = make(map[string]string)
+		ssr.Users = obfs.NewUserTable()
 	}
 	uidPack := binaryx.LEUint32ToBytes(uint32(identity))
 	logrus.Debugf("shadowsocksr adduser uidPack: %s", hex.EncodeToString(uidPack))
-	uidPackStr := string(uidPack)
-	ssr.Users[uidPackStr] = password
+	ssr.Users.Set(string(uidPack), password)
 }
 
 func (ssr *ShadowsocksRProxy) DelUser(identity int) {
 	if ssr.Users == nil {
 		return
 	}
-	uidPack := string(binaryx.LEUint32ToBytes(uint32(identity)))
-	delete(ssr.Users, uidPack)
-}
-
-func (ssr *ShadowsocksRProxy) Reload(users map[string]string) {
-	ssr.Users = users
+	ssr.Users.Delete(string(binaryx.LEUint32ToBytes(uint32(identity))))
 }
 
 type ShadowsocksRUDPMapItem struct {
@@ -396,8 +403,9 @@ func (m *ShadowsocksRUDPMap) Add(client net.Addr, server *network.ShadowsocksRDe
 
 // copy from src to dst at target with read timeout
 func ShadowsocksRMapTimeCopy(dst *network.ShadowsocksRDecorate, target net.Addr, src *ShadowsocksRUDPMapItem, timeout time.Duration) error {
-	buf := pool.GetBuf()
-	defer pool.PutBuf(buf)
+	// 远端 UDP 响应可以到 64KiB，按 4096 收会静默截尾
+	buf := pool.GetUDPBuf()
+	defer pool.PutUDPBuf(buf)
 	defer func() {
 		if e := recover(); e != nil {
 			log.Error("panic in timedCopy:%v %s", e, string(debug.Stack()))
@@ -406,12 +414,16 @@ func ShadowsocksRMapTimeCopy(dst *network.ShadowsocksRDecorate, target net.Addr,
 
 	for {
 		_ = src.SetReadDeadline(time.Now().Add(timeout * time.Second))
-		n, raddr, err := src.ReadFrom(buf)
+		// 给回包前缀留出头部空间，否则接近 64KiB 的响应会在 copy 时越界
+		n, raddr, err := src.ReadFrom(buf[:len(buf)-socksproxy.MaxAddrLen])
 		if err != nil {
 			return err
 		}
 
 		srcAddr := socksproxy.ParseAddr(raddr.String())
+		if srcAddr == nil {
+			return errors.New("udp response source address is invalid")
+		}
 		srcAddrByte := srcAddr.Raw
 		copy(buf[len(srcAddrByte):], buf[:n])
 		copy(buf, srcAddrByte)

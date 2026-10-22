@@ -429,14 +429,14 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 		uid := int(binaryx.LEBytesToUInt32(a.RecvBuf[12:16]) ^ binaryx.LEBytesToUInt32(md5Data[8:12]))
 		uidPack := binaryx.LEUint32ToBytes(uint32(uid))
 		a.UserIDNum = uid
-		if passwd := a.GetServerInfo().GetUsers()[string(uidPack)]; passwd != "" {
+		if passwd := a.GetServerInfo().GetUsers().Lookup(string(uidPack)); passwd != "" {
 			a.UserID = uidPack
 			a.UserKey = []byte(passwd)
 			a.GetServerInfo().UpdateUser(uidPack)
 		} else {
 			// 认不出这个身份就不拿它当账号编号，这条连接的流量退回按监听端口记账
 			a.UserIDNum = 0
-			if len(a.GetServerInfo().GetUsers()) == 0 {
+			if a.GetServerInfo().GetSingle() != 1 {
 				// 多端口：每个监听端口自己就是一个账号，密码表恒空，
 				// 两端都按本端口密钥算会话 key，包里的身份编号随包随机
 				a.UserKey = a.GetServerInfo().GetKey()
@@ -631,9 +631,9 @@ func (a *AuthChainA) ClientUDPPostDecrypt(buf []byte) ([]byte, error) {
 
 func (a *AuthChainA) ServerUDPPreEncrypt(buf, uid []byte) ([]byte, error) {
 	var userKey []byte
-	if passwd := a.GetServerInfo().GetUsers()[string(uid)]; passwd != "" {
+	if passwd := a.GetServerInfo().GetUsers().Lookup(string(uid)); passwd != "" {
 		userKey = []byte(passwd)
-	} else if len(a.GetServerInfo().GetUsers()) == 0 {
+	} else if a.GetServerInfo().GetSingle() != 1 {
 		// 多端口：本端口自己就是账号，回包按本端口密钥封
 		userKey = a.GetServerInfo().GetKey()
 	} else {
@@ -662,17 +662,21 @@ func (a *AuthChainA) ServerUDPPreEncrypt(buf, uid []byte) ([]byte, error) {
 }
 
 func (a *AuthChainA) ServerUDPPostDecrypt(buf []byte) ([]byte, string, error) {
+	// 未认证的 UDP 短包会带着任意长度走到这里，先按协议最小头长拒绝
+	if len(buf) < 8 {
+		return []byte{}, "", nil
+	}
 	macKey := a.GetServerInfo().GetKey()
 	md5Data := hmacmd5(macKey, buf[len(buf)-8:len(buf)-5])
 	uid := binaryx.LEBytesToUInt32(buf[len(buf)-5:len(buf)-1]) ^ binaryx.LEBytesToUInt32(md5Data[:4])
 	uidPack := binaryx.LEUint32ToBytes(uid)
 	var userKey []byte
-	if passwd := a.GetServerInfo().GetUsers()[string(uidPack)]; passwd != "" {
+	if passwd := a.GetServerInfo().GetUsers().Lookup(string(uidPack)); passwd != "" {
 		userKey = []byte(passwd)
 	} else {
 		// 认不出这个身份就不能把它当账号带出去：调用方按返回的 uid 记账与回包
 		uidPack = nil
-		if len(a.GetServerInfo().GetUsers()) == 0 {
+		if a.GetServerInfo().GetSingle() != 1 {
 			// 多端口：本端口自己就是账号，两端都按本端口密钥封包
 			userKey = a.GetServerInfo().GetKey()
 		} else {
@@ -704,7 +708,9 @@ func (a *AuthChainA) ServerUDPPostDecrypt(buf []byte) ([]byte, string, error) {
 }
 
 func (a *AuthChainA) Dispose() {
-	core.GetApp().GetObfsProtocolService().Remove(string(a.SessionKey()), a.ClientID)
+	if service := core.GetApp().GetObfsProtocolService(); service != nil {
+		service.Remove(string(a.SessionKey()), a.ClientID)
+	}
 }
 
 func (a *AuthChainA) rndDataLen(bufSize int, lastHash []byte, random *XorShift128Plus) int {

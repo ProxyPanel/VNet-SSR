@@ -100,6 +100,56 @@ func TestObfsAuthChainDataBucketsArePerAccount(t *testing.T) {
 	}
 }
 
+// 窗口回收的判据必须看 Front：旧实现读 Back，Back 是下一个未分配 ID，循环第一次就 break，
+// Front 永不前进；累计 0x4000 个 connectionID 后合法客户端会被当成 replay 拒掉
+func TestClientQueueAdvancesFrontWindow(t *testing.T) {
+	o := NewObfsAuthChainData("auth_chain_a")
+	defer o.Close()
+	o.SetMaxClient(4)
+
+	key := []byte("account")
+	const first = 1000
+	for i := first; i <= first+0x4000+10; i++ {
+		if !o.Insert(key, 0, i) {
+			t.Fatalf("第 %d 个 connectionID 被拒，窗口没有回收", i-first+1)
+		}
+	}
+
+	q, _ := o.Buckets[string(key)].Get(0).(*ClientQueue)
+	if q.Front == first-64 {
+		t.Fatalf("Front 仍停在初始值 %d，Alloc 永远不会回收", q.Front)
+	}
+	allocated := 0
+	q.Alloc.Range(func(_, _ interface{}) bool {
+		allocated++
+		return true
+	})
+	if allocated > 0x1000+16 {
+		t.Fatalf("窗口回收后 Alloc 仍有 %d 项，超过窗口大小", allocated)
+	}
+}
+
+// 桶空掉之后必须能删掉并停掉它自己的 janitor，否则历史账号一直各留一个协程
+func TestGCObfsEmptyBuckets(t *testing.T) {
+	o := NewObfsAuthChainData("auth_chain_a")
+	defer o.Close()
+
+	key := []byte("account")
+	if !o.Insert(key, 0, 1) {
+		t.Fatal("首连接被拒")
+	}
+	bucket := o.Buckets[string(key)]
+	if bucket == nil {
+		t.Fatal("桶没有建起来")
+	}
+	bucket.Clear()
+	o.gcBuckets()
+
+	if o.Buckets[string(key)] != nil {
+		t.Fatal("空桶没有被回收")
+	}
+}
+
 // 桶的 TTL 是 60 秒，判据只验它确实带到期语义：过期后计数不再累计
 func TestObfsAuthChainDataBucketTTLIsOneMinute(t *testing.T) {
 	o := NewObfsAuthChainData("auth_chain_a")

@@ -1,6 +1,8 @@
 package service
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +77,33 @@ func TestBelowThresholdAccumulatesInsteadOfDropped(t *testing.T) {
 	}
 	if len(s.trafficSince) != 0 {
 		t.Errorf("行已发出，滞留计时不该还挂着: %+v", s.trafficSince)
+	}
+}
+
+// 在线 IP 必须按整串精确比较：字符串包含判据会把 1.2.3.4 当成已存在于 1.2.3.45，
+// IPv6 的 :: 更容易误判；同时要限条数，不能让人用大量源地址把上报串撑大
+func TestOnlineIPDedupesExactAndCaps(t *testing.T) {
+	s := newPortUser()
+	s.Online(30007, "1.2.3.45:1000")
+	s.Online(30007, "1.2.3.4:1000")
+	s.Online(30007, "1.2.3.4:1001")
+	s.Online(30007, "[2001:db8::1]:1000")
+	s.Online(30007, "[fe80::1]:1000")
+
+	rows := s.ReportOnline()
+	if len(rows) != 1 {
+		t.Fatalf("在线行数 = %d, want 1", len(rows))
+	}
+	if rows[0].IP != "1.2.3.4,1.2.3.45,2001:db8::1,fe80::1" {
+		t.Fatalf("在线 IP = %q，精确去重或排序不符", rows[0].IP)
+	}
+
+	for i := 0; i < maxOnlineIPs+8; i++ {
+		s.Online(30007, "10.0.0."+strconv.Itoa(i)+":1000")
+	}
+	rows = s.ReportOnline()
+	if got := len(strings.Split(rows[0].IP, ",")); got > maxOnlineIPs {
+		t.Fatalf("在线 IP 条数 = %d，超过上限 %d", got, maxOnlineIPs)
 	}
 }
 

@@ -11,12 +11,12 @@ import (
 	"github.com/ProxyPanel/VNet-SSR/utils/bytesx"
 	"github.com/ProxyPanel/VNet-SSR/utils/randomx"
 	"hash"
-	"math"
 	"sync"
 	"time"
 
 	"github.com/ProxyPanel/VNet-SSR/common/cache"
 	"github.com/ProxyPanel/VNet-SSR/common/log"
+	"github.com/ProxyPanel/VNet-SSR/utils/goroutine"
 )
 
 func conbineToBytes(data ...interface{}) []byte {
@@ -189,11 +189,14 @@ func (c *ClientQueue) Insert(connectionID int) bool {
 		c.Back = connectionID + 1
 	}
 	c.Alloc.Store(connectionID, 1)
+	// 回收窗口：只要 front 还分配着、或者窗口超过 0x1000，就把它往前推。
+	// 判据看 Front（不是 Back）——Back 是下一个未分配 ID，永远不在 Alloc 里
 	for {
-		if _, ok := c.Alloc.Load(c.Back); !ok || c.Front+0x1000 >= c.Back {
+		_, frontAllocated := c.Alloc.Load(c.Front)
+		if !frontAllocated && c.Front+0x1000 >= c.Back {
 			break
 		}
-		if _, ok := c.Alloc.Load(c.Front); ok {
+		if frontAllocated {
 			c.Alloc.Delete(c.Front)
 		}
 		c.Front += 1
@@ -215,7 +218,8 @@ type ObfsAuthChainData struct {
 	LocalClientId []byte
 	ConnectionID  uint32
 	MaxClient     int
-	MaxBuffer     int
+	stop          chan struct{}
+	stopOnce      sync.Once
 }
 
 func NewObfsAuthChainData(name string) *ObfsAuthChainData {
@@ -224,9 +228,53 @@ func NewObfsAuthChainData(name string) *ObfsAuthChainData {
 		Buckets:       make(map[string]*cache.LRU),
 		LocalClientId: []byte{},
 		ConnectionID:  0,
+		stop:          make(chan struct{}),
 	}
 	result.SetMaxClient(64)
+	// 每个账号的桶里各有一个 janitor；桶本身只在空掉之后才会被回收，这里定期扫掉空桶
+	go goroutine.Protect(func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				result.gcBuckets()
+			case <-result.stop:
+				return
+			}
+		}
+	})
 	return result
+}
+
+// Close 停掉桶回收协程与所有桶的 janitor；节点重载替换单例时调用
+func (o *ObfsAuthChainData) Close() {
+	o.stopOnce.Do(func() { close(o.stop) })
+
+	o.mu.Lock()
+	buckets := o.Buckets
+	o.Buckets = make(map[string]*cache.LRU)
+	o.mu.Unlock()
+
+	for _, bucket := range buckets {
+		bucket.Stop()
+	}
+}
+
+func (o *ObfsAuthChainData) gcBuckets() {
+	o.mu.Lock()
+	var empty []*cache.LRU
+	for key, bucket := range o.Buckets {
+		if bucket.Len() == 0 {
+			delete(o.Buckets, key)
+			empty = append(empty, bucket)
+		}
+	}
+	o.mu.Unlock()
+
+	for _, bucket := range empty {
+		bucket.Stop()
+	}
 }
 
 func (o *ObfsAuthChainData) Update(userID []byte, clientID, connectionID int) {
@@ -251,7 +299,6 @@ func (o *ObfsAuthChainData) SetMaxClient(maxClient int) {
 	defer o.mu.Unlock()
 
 	o.MaxClient = maxClient
-	o.MaxBuffer = int(math.Max(float64(maxClient), 1024))
 }
 
 func (o *ObfsAuthChainData) Insert(userID []byte, clientID, connectionID int) bool {
@@ -322,20 +369,4 @@ func (o *ObfsAuthChainData) AuthData() []byte {
 		o.LocalClientId,
 		binaryx.LEUint32ToBytes(o.ConnectionID),
 	)
-}
-
-func (o *ObfsAuthChainData) GetConnectionID() uint32 {
-	return o.ConnectionID
-}
-
-func (o *ObfsAuthChainData) SetConnectionID(connectionID uint32) {
-	o.ConnectionID = connectionID
-}
-
-func (o *ObfsAuthChainData) SetClientID(clientID []byte) {
-	o.LocalClientId = clientID
-}
-
-func (o *ObfsAuthChainData) GetClientID() []byte {
-	return o.LocalClientId
 }

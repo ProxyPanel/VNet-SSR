@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ProxyPanel/VNet-SSR/common/obfs"
 	"github.com/ProxyPanel/VNet-SSR/core"
 	"github.com/ProxyPanel/VNet-SSR/model"
 	"github.com/ProxyPanel/VNet-SSR/utils/binaryx"
@@ -64,7 +65,7 @@ func newTCPProxy(t *testing.T, port int, method string, fw core.HostFirewall) *S
 		Protocol: "origin",
 		Obfs:     "plain",
 		Single:   0,
-		Users:    map[string]string{},
+		Users:    obfs.NewUserTable(),
 		ShadowsocksRArgs: &ShadowsocksRArgs{
 			TCPSwitch: "true",
 			UDPSwitch: "false",
@@ -219,21 +220,21 @@ func TestAddUserAndDelUserKeyPasswordTableByPort(t *testing.T) {
 
 	ssr.AddUser(8388, "killer")
 	key := string(binaryx.LEUint32ToBytes(8388))
-	if got := ssr.Users[key]; got != "killer" {
-		t.Fatalf("密码表 = %v, want 端口 8388 对应 killer", ssr.Users)
+	if got := ssr.Users.Lookup(key); got != "killer" {
+		t.Fatalf("密码表 = %q, want 端口 8388 对应 killer", got)
 	}
 	if len(binaryx.LEUint32ToBytes(8388)) != 4 {
 		t.Fatal("身份键不是 4 字节，auth 包解出来的长度会对不上")
 	}
 
 	ssr.DelUser(8388)
-	if _, exists := ssr.Users[key]; exists {
-		t.Fatalf("删号后密码表还剩: %v", ssr.Users)
+	if got := ssr.Users.Lookup(key); got != "" {
+		t.Fatalf("删号后密码表还剩: %q", got)
 	}
 
 	// 端口 0 是合法键位（单端口下真实身份来自 auth 包），不能被当成「没填」漏掉
 	ssr.AddUser(0, "zero")
-	if _, exists := ssr.Users[string(binaryx.LEUint32ToBytes(0))]; !exists {
+	if got := ssr.Users.Lookup(string(binaryx.LEUint32ToBytes(0))); got != "zero" {
 		t.Fatal("身份 0 的条目被吞掉了")
 	}
 }
@@ -268,6 +269,16 @@ func freePort(t *testing.T) int {
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).Port
+}
+
 // logWatcher 收下 logrus 的每条日志，用来发现被 recover 兜成一行日志的 panic。
 type logWatcher struct {
 	mu      sync.Mutex
@@ -293,6 +304,37 @@ func (w *logWatcher) crashes() []string {
 		}
 	}
 	return hits
+}
+
+// 未认证的短 UDP 包会走到身份协议的解包入口：长度不足时必须在入口拒绝，
+// 否则 panic 被 StartUDP 的 recover 兜住后读协程直接退出，端口从此不再处理 UDP
+func TestUDPShortDatagramDoesNotKillReader(t *testing.T) {
+	port := freeUDPPort(t)
+	ssr := newTCPProxy(t, port, "none", &fakeFirewall{})
+	ssr.Protocol = "auth_chain_a"
+	ssr.ShadowsocksRArgs.TCPSwitch = "false"
+	ssr.ShadowsocksRArgs.UDPSwitch = "true"
+
+	watcher := &logWatcher{}
+	logrus.AddHook(watcher)
+
+	if err := ssr.Start(); err != nil {
+		t.Fatalf("Start 失败: %s", err.Error())
+	}
+
+	conn, err := net.Dial("udp", ssr.Listener.Addr)
+	if err != nil {
+		t.Fatalf("连 UDP 端口失败: %s", err.Error())
+	}
+	_, _ = conn.Write([]byte{})
+	_, _ = conn.Write([]byte{0x00})
+	_ = conn.Close()
+
+	time.Sleep(300 * time.Millisecond)
+
+	if hits := watcher.crashes(); len(hits) > 0 {
+		t.Fatalf("短 UDP 包之后读协程出现了 panic: %s", hits[0])
+	}
 }
 
 // UDP 路径上算法名不合法时装饰器是 nil，判 err 之前先碰它会让这个端口的 UDP 读协程在起来那一刻
