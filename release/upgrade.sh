@@ -8,6 +8,11 @@
 # 单节点（节点上直接跑，重复跑无害——已是最新会直接退出）：
 #   curl -fsSL https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master/release/upgrade.sh | bash
 #
+# 国内节点：首跳 curl 的 URL 前加镜像前缀，并把同一前缀写成 GH_PROXY 传给 bash（脚本内部取
+# version.json 与发布包都要用它）。前缀只从可信来源填，公益镜像挂了就换一个：
+#   curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master/release/upgrade.sh \
+#     | GH_PROXY=https://ghfast.top/ bash
+#
 # 多节点（跳板机上跑，nodes.txt 一行一个 IP；任一节点失败即停，不带病滚全池）：
 #   for h in $(cat nodes.txt); do echo "== $h"; ssh -o BatchMode=yes "root@$h" \
 #     'curl -fsSL https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master/release/upgrade.sh | bash' || break; done
@@ -16,6 +21,7 @@
 #   -c, --check            只查有没有新版（0=已最新，10=有新版可升）
 #   -f, --force            版本相同也重装
 #   -p, --proxy URL        走代理下载，如 -p http://127.0.0.1:3128
+#   -g, --gh-proxy URL     GitHub 镜像前缀，如 -g https://ghfast.top/（等价环境变量 GH_PROXY/GITHUB_PROXY）
 #       --version vX.Y.Z   升到/退到指定版本（退旧版就是手动回滚的通道）
 #
 # 退出码：0 成功或已是最新；1 环境错误（未装 vnet、缺 curl/unzip、坏包）；
@@ -41,6 +47,7 @@ BLUE="36m"
 CHECK=''
 FORCE=''
 PROXY=''
+GH_PROXY="${GH_PROXY:-${GITHUB_PROXY:-}}"
 VERSION=''
 CUR_VER=''
 NEW_VER=''
@@ -58,6 +65,10 @@ while [[ $# > 0 ]]; do
     PROXY="-x ${2}"
     shift
     ;;
+  -g | --gh-proxy)
+    GH_PROXY="${2}"
+    shift
+    ;;
   --version)
     VERSION="$2"
     shift
@@ -68,6 +79,11 @@ while [[ $# > 0 ]]; do
   esac
   shift
 done
+
+if [[ -n "$GH_PROXY" ]]; then
+  GH_PROXY="${GH_PROXY%/}/"
+  RAW_BASE="${GH_PROXY}${RAW_BASE}"
+fi
 
 colorEcho() {
   echo -e "\033[${1}${@:2}\033[0m" 1>&2
@@ -126,7 +142,7 @@ getVersion() {
 downloadAndExtract() {
   rm -rf "$VSRC_ROOT"
   mkdir -p "$VSRC_ROOT"
-  local link="https://github.com/ProxyPanel/VNet-SSR/releases/download/${NEW_VER}/vnet-linux-${VDIS}.zip"
+  local link="${GH_PROXY}https://github.com/ProxyPanel/VNet-SSR/releases/download/${NEW_VER}/vnet-linux-${VDIS}.zip"
   colorEcho ${BLUE} "下载 ${link}"
   # -f 是判据的全部：没有它，404 的 9 字节正文会被当成包落进 ZIPFILE，报成「包不完整」
   local rc=0 http_code

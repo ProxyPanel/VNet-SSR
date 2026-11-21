@@ -147,6 +147,37 @@ out=$(DDNS_CONFIG="$pd2/config.json" DDNS_DNS= DDNS_ID= DDNS_TOKEN= DDNS_IPV4= s
 expect_has 'ddns残留旧任务提示' '仍在按旧配置跑' "$out"
 expect_has 'ddns残留停用提示' 'harden.sh --rollback' "$out"
 rm -rf "$pd2"
+
+# 只给 DDNS_IPV6 也算给了域名：缺凭据时跳过的原因里不该再列 DDNS_IPV4/IPV6
+out=$(DDNS_DNS= DDNS_ID= DDNS_TOKEN= DDNS_IPV6='v6.example.com' sec_ddns 2>&1 >/dev/null)
+expect_has 'ddns仅v6仍跳过' '不装 ddns' "$out"
+if [[ "$out" == *'DDNS_IPV4/IPV6'* ]]; then bad '只给 v6 不该报缺域名'; else ok; fi
+
+# 配置生成：启用的族才写 ipvN 与 indexN=public（默认 default 在多网卡/VPN 上会抓到怪 IP）
+cfg4=$(ddns_config_text dnspod id tok 'a.example.com, b.example.com' '')
+expect_has 'ddns配置v4域名' '"ipv4": ["a.example.com", "b.example.com"]' "$cfg4"
+expect_has 'ddns配置index4' '"index4": "public"' "$cfg4"
+if [[ "$cfg4" == *'index6'* || "$cfg4" == *'"ipv6"'* ]]; then bad '只给 v4 不该写 v6/index6'; else ok; fi
+
+cfg6=$(ddns_config_text dnspod id tok '' 'v6.example.com')
+expect_has 'ddns配置v6域名' '"ipv6": ["v6.example.com"]' "$cfg6"
+expect_has 'ddns配置index6' '"index6": "public"' "$cfg6"
+if [[ "$cfg6" == *'index4'* || "$cfg6" == *'"ipv4"'* ]]; then bad '只给 v6 不该写 v4/index4'; else ok; fi
+
+cfgboth=$(ddns_config_text dnspod id tok 'a.example.com' 'v6.example.com')
+expect_has '双栈index4' '"index4": "public"' "$cfgboth"
+expect_has '双栈index6' '"index6": "public"' "$cfgboth"
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import json' >/dev/null 2>&1; then
+  cfgtmp=$(mktemp)
+  printf '%s\n' "$cfgboth" >"$cfgtmp"
+  if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["index4"]=="public" and d["index6"]=="public"' "$cfgtmp" 2>/dev/null; then ok; else bad 'ddns 配置不是合法 JSON'; fi
+  rm -f "$cfgtmp"
+fi
+
+# 坏域名/两族都空：返回非 0，调用方据此不写配置
+expect_reject 'ddns坏域名' ddns_config_text dnspod id tok 'bad!domain' ''
+expect_reject 'ddns坏v6域名' ddns_config_text dnspod id tok '' 'bad!domain'
+expect_reject 'ddns两族都空' ddns_config_text dnspod id tok '' ''
 rm -rf "$pd"
 
 # 锁死保险判定：真改了 ssh/防火墙才起；AUTO_CONFIRM=1 一律不起
@@ -175,6 +206,48 @@ printf '{"api_host":"https://p.example"}\n' >"$nj"
 expect_eq 'node_id缺键' '' "$(node_id_from_config "$nj")"
 rm -f "$nj"
 expect_eq 'node_id缺文件' '' "$(node_id_from_config '/no/such/config.json')"
+
+# DHCP 探测：配置面用临时文件驱动，运行面用 ss/netstat 输出样本判 UDP 68
+NETD_RE='^[[:space:]]*DHCP[[:space:]]*=[[:space:]]*(yes|ipv4|ipv6|both)([[:space:]]|$)'
+IFACE_RE='^[[:space:]]*iface[[:space:]]+[^[:space:]]+[[:space:]]+inet6?[[:space:]]+(dhcp|auto)([[:space:]]|$)'
+NM_RE='^[[:space:]]*method[[:space:]]*=[[:space:]]*auto([[:space:]]|$)'
+NP_RE='^[[:space:]]*dhcp[46]?[[:space:]]*:[[:space:]]*true([[:space:]]|$)'
+dp=$(mktemp -d)
+printf '[Match]\nName=eth0\n\n[Network]\nDHCP=ipv4\n' >"$dp/10-netplan-eth0.network"
+printf '[Match]\nName=eth1\n\n[Network]\nDHCP=no\n' >"$dp/static.network"
+printf 'auto eth0\niface eth0 inet dhcp\n' >"$dp/interfaces"
+printf 'auto eth1\niface eth1 inet static\n' >"$dp/interfaces-static"
+printf '[connection]\nid=Wired\n[ipv4]\nmethod=auto\n' >"$dp/eth0.nmconnection"
+printf '[ipv4]\nmethod=manual\n' >"$dp/static.nmconnection"
+printf 'network:\n  version: 2\n  ethernets:\n    eth0:\n      dhcp4: true\n' >"$dp/01-netcfg.yaml"
+printf 'network:\n  version: 2\n  ethernets:\n    eth1:\n      dhcp4: false\n' >"$dp/static.yaml"
+if dhcp_conf_has "$NETD_RE" "$dp/static.network" "$dp/10-netplan-eth0.network"; then ok; else bad 'networkd DHCP=ipv4 应识别'; fi
+expect_reject 'networkd DHCP=no' dhcp_conf_has "$NETD_RE" "$dp/static.network"
+if dhcp_conf_has "$IFACE_RE" "$dp/interfaces"; then ok; else bad 'ifupdown inet dhcp 应识别'; fi
+expect_reject 'ifupdown static' dhcp_conf_has "$IFACE_RE" "$dp/interfaces-static"
+if dhcp_conf_has "$NM_RE" "$dp/eth0.nmconnection"; then ok; else bad 'NetworkManager method=auto 应识别'; fi
+expect_reject 'NetworkManager method=manual' dhcp_conf_has "$NM_RE" "$dp/static.nmconnection"
+if dhcp_conf_has "$NP_RE" "$dp/01-netcfg.yaml"; then ok; else bad 'netplan dhcp4:true 应识别'; fi
+expect_reject 'netplan dhcp4:false' dhcp_conf_has "$NP_RE" "$dp/static.yaml"
+expect_reject '配置文件不存在' dhcp_conf_has "$NETD_RE" "$dp/no-such.network"
+rm -rf "$dp"
+
+ss_v4=$'State Recv-Q Send-Q Local Address:Port Peer Address:Port\nUNCONN 0 0 0.0.0.0:68 0.0.0.0:*'
+ss_v6=$'State Recv-Q Send-Q Local Address:Port Peer Address:Port\nUNCONN 0 0 [::]:68 [::]:*'
+ss_67=$'State Recv-Q Send-Q Local Address:Port Peer Address:Port\nUNCONN 0 0 0.0.0.0:67 0.0.0.0:*'
+ss_peer=$'State Recv-Q Send-Q Local Address:Port Peer Address:Port\nUNCONN 0 0 127.0.0.1:53 0.0.0.0:68'
+netstat_v4=$'Proto Recv-Q Send-Q Local Address Foreign Address State\nudp 0 0 0.0.0.0:68 0.0.0.0:*'
+dhcp_udp68_bound "$ss_v4" && ok || bad 'ss 本机 0.0.0.0:68 应识别'
+dhcp_udp68_bound "$ss_v6" && ok || bad 'ss 本机 [::]:68 应识别'
+dhcp_udp68_bound "$netstat_v4" && ok || bad 'netstat 本机 0.0.0.0:68 应识别'
+expect_reject 'ss 只有 67 不算 DHCP' dhcp_udp68_bound "$ss_67"
+expect_reject 'ss 对端 68 不算 DHCP' dhcp_udp68_bound "$ss_peer"
+expect_reject 'ss 空输出' dhcp_udp68_bound ''
+
+# DHCP=1 必须短路所有探测，且回报来源（sec_firewall 会把它打进日志）
+det=$(DHCP=1 dhcp_probe)
+expect_eq 'DHCP=1 来源' 'DHCP=1 指定' "$det"
+DHCP=1 detect_dhcp && ok || bad 'DHCP=1 应直接认定有 DHCP'
 
 # 回归：两种真实调用形态都必须真跑 main。source-guard 曾把 stdin（curl|bash -s）整条跳过，
 # 表现为下载成功却静默无输出；纯函数测试走源进路径覆盖不到它，故在这里直接驱动两种形态

@@ -12,6 +12,8 @@ RAW_BASE='https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master'
 
 # CLI arguments
 PROXY=''
+# GitHub 镜像/加速前缀（环境变量 GH_PROXY 或 GITHUB_PROXY，CLI -g/--gh-proxy），空则直连
+GH_PROXY="${GH_PROXY:-${GITHUB_PROXY:-}}"
 HELP=''
 FORCE=''
 CHECK=''
@@ -54,6 +56,10 @@ while [[ $# > 0 ]]; do
   case "$1" in
   -p | --proxy)
     PROXY="-x ${2}"
+    shift # past argument
+    ;;
+  -g | --gh-proxy)
+    GH_PROXY="${2}"
     shift # past argument
     ;;
   -h | --help)
@@ -99,6 +105,12 @@ while [[ $# > 0 ]]; do
   esac
   shift # past argument or value
 done
+
+# GitHub 镜像前缀归一化：无论是否带尾斜杠，统一成 "prefix/"，空则直连
+if [[ -n "$GH_PROXY" ]]; then
+  GH_PROXY="${GH_PROXY%/}/"
+  RAW_BASE="${GH_PROXY}${RAW_BASE}"
+fi
 
 ###############################
 colorEcho() {
@@ -151,7 +163,7 @@ archAffix() {
 downloadVNet() {
   rm -rf /tmp/vnet
   mkdir -p /tmp/vnet
-  DOWNLOAD_LINK="https://github.com/ProxyPanel/VNet-SSR/releases/download/${NEW_VER}/vnet-linux-${VDIS}.zip"
+  DOWNLOAD_LINK="${GH_PROXY}https://github.com/ProxyPanel/VNet-SSR/releases/download/${NEW_VER}/vnet-linux-${VDIS}.zip"
   colorEcho ${BLUE} "Downloading vnet: ${DOWNLOAD_LINK}"
   # -f 是判据的全部：没有它，404 的 9 字节正文会落进 ZIPFILE，再由 extract 报成解压失败
   local rc=0 http_code
@@ -398,6 +410,8 @@ Help() {
 
   WITH_TUNE=1        装完跑 release/tune.sh 调系统参数（写 sysctl 等四处，不动 sshd 与防火墙，
                      不重启 vnet；改完想立即生效就自己 systemctl restart vnet）
+  GH_PROXY=https://ghfast.top/   GitHub 镜像前缀（或 GITHUB_PROXY），直连 GitHub 慢的地区用；
+                     首跳下载 deploy.sh 本身也要在 curl 的 URL 前加同样前缀
   WITH_DNS_CACHE=1   装 dnsmasq 做本机解析缓存（只监听 127.0.0.1；验证不过会还原 resolv.conf）
   WEB_API/NODE_ID/NODE_KEY  三个都给才会改写 /etc/vnet/config.json
 
@@ -406,6 +420,8 @@ Help() {
                  [--remove] [--extract DIR] [--extractonly] [--with-dns-cache] [--errifuptodate]
     -h, --help            本帮助
     -p, --proxy           走代理下载，如 -p socks5://127.0.0.1:1080 或 -p http://127.0.0.1:3128
+    -g, --gh-proxy URL    GitHub 镜像/加速前缀，如 -g https://ghfast.top/（直连 GitHub 慢的地区用；
+                          公益站随时可能挂，失败就换一个前缀重试）
     -f, --force           版本相同也重装
     -c, --check           只查有没有新版
     -l, --local FILE      从本地包装

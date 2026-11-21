@@ -17,15 +17,21 @@
 #   PANEL_IP      面板出口 IP；管理口 PUSH_PORT 只对它开放。
 #   PUSH_PORT     节点管理口（面板节点编辑页的 push_port），只听 TCP。
 #   REBOOT_TIME   条件重启时刻，默认 05:00；三台错开就各给不同值（如 05:00/05:20/05:40）。
-#   DHCP=1        本机走 DHCP 续租时放行 UDP 67/68（默认自动探测，探不到就跳过并提示）。
+#   DHCP=1        强制认定本机走 DHCP 续租、放行 UDP 67/68。默认自动探测：dhclient/dhcpcd 进程、
+#                 UDP 68 监听、networkd/netplan/NetworkManager/ifupdown 配置；探不到才跳过并提示。
 #   DDNS_DNS      ddns 的提供方名（示例：dnspod，取值见 ddns --help）；DDNS_ID / DDNS_TOKEN 是提供方给的凭据；
-#   DDNS_IPV4     要更新的域名，逗号分隔（如 'a.ddns.newfuture.cc,b.ddns.newfuture.cc'）。
-#                 四个缺一个就整段跳过（不装 ddns、不写配置、不装任务）；值只从环境变量/secrets 注入，不写进脚本。
+#   DDNS_IPV4     要更新的 IPv4 域名，逗号分隔（如 'a.ddns.newfuture.cc,b.ddns.newfuture.cc'）。
+#   DDNS_IPV6     要更新的 IPv6 域名，逗号分隔；两者至少一个，否则整段跳过（不装 ddns、不写配置、不装任务）。
+#                 启用的族会写 index4/index6 = "public"（按公网 API 取 IP，避开默认探测在多网卡/VPN/网桥上抓到怪 IP）。
+#                 值只从环境变量/secrets 注入，不写进脚本。
+#   GH_PROXY      GitHub 镜像/加速前缀（如 https://ghfast.top/），首跳 curl 的 URL 也要加；空则直连。
 #
 # 子命令（写给 bash）：
 #   --confirm     开新会话确认能登录后跑它，取消 10 分钟自动还原（死人开关）。
 #   --rollback    删本脚本写的配置、还原 ufw 与 sshd 到改前、清 ddns 配置/任务/缓存；不卸载已装的包。
 #   --status      只读一条读数：服务/版本/fd/拥塞控制/今日流量/封禁数/磁盘/待重启/ufw/ssh 认证方式。
+#   --self-update 拉最新 harden.sh 覆盖本地安装；下载失败/语法不过不覆盖。
+#   --gh-proxy URL 等同 GH_PROXY；--version 打印脚本版本。
 #   -h, --help    本帮助。
 #
 # 退出码：0 成功（含「什么都没改」）；1 环境错误（非 root/非 Debian/缺必要变量且无法安全继续）。
@@ -35,7 +41,9 @@
 # 不确认就自动退回。sshd 配置先用 sshd -T 断言真生效才 reload，公钥先用 ssh-keygen -lf 验过才写。
 
 RAW_BASE='https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master'
-HARDEN_VERSION='2026-11-21.8'
+# GitHub 镜像/加速前缀（环境变量 GH_PROXY 或 GITHUB_PROXY，CLI --gh-proxy），空则直连
+GH_PROXY="${GH_PROXY:-${GITHUB_PROXY:-}}"
+HARDEN_VERSION='2026-11-25.1'
 
 STATE_DIR='/etc/vnet-harden'
 STATE_FILE="$STATE_DIR/state.env"
@@ -175,6 +183,83 @@ ddns_resolve() {
     [[ -x "$p" ]] && { printf '%s\n' "$p"; return 0; }
   done
   return 1
+}
+
+# 从 ddns 配置里取出要更新的域名（ipv4 + ipv6），一行一个；不依赖 jq，python3 可用时优先用它解析 JSON，
+# 否则用 sed 兜底（只认简单的 ["a","b"] 形式）。文件不存在/解析失败返回空
+ddns_config_domains() {
+  local cfg="${1:-$DDNS_CONFIG}"
+  [[ -f "$cfg" ]] || return 0
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import json' >/dev/null 2>&1; then
+    local _out
+    _out=$(python3 - "$cfg" 2>/dev/null <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+for key in ('ipv4', 'ipv6'):
+    for x in (d.get(key) or []):
+        if isinstance(x, str) and x.strip():
+            print(x.strip())
+PY
+)
+    if [[ -n "$_out" ]]; then
+      printf '%s\n' "$_out"
+      return 0
+    fi
+  fi
+  # 兜底：分别抓 ipv4/ipv6 两个数组，避免贪心 .* 只抓到最后一个
+  local _arr
+  for _arr in $(grep -oE '"ipv[46]"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$cfg" 2>/dev/null); do
+    printf '%s\n' "$_arr" | sed -n 's/.*\[\(.*\)\].*/\1/p' | tr -d '"' | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$'
+  done
+  return 0
+}
+
+# 生成 ddns 配置文本；参数：dns id token ipv4域名(逗号分隔) ipv6域名(逗号分隔)。
+# 只写给了域名的那一族：ipv4 配 index4="public"、ipv6 配 index6="public"。
+# 默认的 "default" 是「系统访问外网的默认 IP」，多网卡/VPN/Docker 网桥上会抓到根本不是出口的私网 IP，
+# 写到 DNS 里就是连不上的记录；"public" 按公网 API 取，正是这里要的判据。
+# 任一域名不像域名就返回 1（不写配置），两族都空也返回 1。凭据只由调用方传，不回显。
+ddns_config_text() {
+  local dns="$1" id="$2" token="$3" v4="${4:-}" v6="${5:-}"
+  local v4json='' v6json='' one IFS=','
+  for one in $v4; do
+    one=$(printf '%s' "$one" | tr -d '[:space:]')
+    [[ -z "$one" ]] && continue
+    if [[ ! "$one" =~ ^[A-Za-z0-9*_.-]+$ ]]; then
+      printf "DDNS_IPV4 里的 '%s' 不像域名：不写配置。\n" "$one" >&2
+      return 1
+    fi
+    v4json+="${v4json:+, }\"${one}\""
+  done
+  for one in $v6; do
+    one=$(printf '%s' "$one" | tr -d '[:space:]')
+    [[ -z "$one" ]] && continue
+    if [[ ! "$one" =~ ^[A-Za-z0-9*_.-]+$ ]]; then
+      printf "DDNS_IPV6 里的 '%s' 不像域名：不写配置。\n" "$one" >&2
+      return 1
+    fi
+    v6json+="${v6json:+, }\"${one}\""
+  done
+  if [[ -z "$v4json" && -z "$v6json" ]]; then
+    printf 'DDNS_IPV4/IPV6 里没有有效域名：不写配置。\n' >&2
+    return 1
+  fi
+
+  printf '{\n  "dns": "%s",\n  "id": "%s",\n  "token": "%s"' "$dns" "$id" "$token"
+  [[ -n "$v4json" || -n "$v6json" ]] && printf ','
+  printf '\n'
+  if [[ -n "$v4json" ]]; then
+    printf '  "ipv4": [%s],\n  "index4": "public"' "$v4json"
+    [[ -n "$v6json" ]] && printf ','
+    printf '\n'
+  fi
+  if [[ -n "$v6json" ]]; then
+    printf '  "ipv6": [%s],\n  "index6": "public"\n' "$v6json"
+  fi
+  printf '}\n'
 }
 
 # 节点 id 取自节点配置（不依赖 jq）；文件不存在/无该键返回空
@@ -337,12 +422,69 @@ precheck_dpkg() {
   colorEcho ${YELLOW} "本脚本不代修包：先 dpkg --audit 看原因，dpkg --configure -a 重试配置；还不行就 apt-get -y purge 掉那个包，再重跑。"
 }
 
-#  best-effort 探 DHCP：networkd 的 .network 或 ifupdown 的 interfaces 里写了 DHCP 才算
-detect_dhcp() {
-  [[ "${DHCP:-}" == '1' ]] && return 0
-  grep -rqiE '^\s*DHCP\s*=\s*(yes|ipv4|ipv6)' /etc/systemd/network/ 2>/dev/null && return 0
-  grep -qiE '^\s*iface\s+\S+\s+inet\s+dhcp' /etc/network/interfaces /etc/network/interfaces.d/* 2>/dev/null && return 0
+# 纯函数：在一组文件里按正则找 DHCP 配置特征。文件不存在/读不到一律跳过。
+# 单独抽出来是为了 harden_test.sh 能用临时文件驱动，不依赖真机路径。
+dhcp_conf_has() {
+  local re="$1" f
+  shift
+  for f in "$@"; do
+    [[ -f "$f" ]] || continue
+    grep -qiE "$re" "$f" 2>/dev/null && return 0
+  done
   return 1
+}
+
+# 纯函数：从 `ss -uln` / `netstat -uln` 的输出判 UDP 68 是否有本机监听（DHCP 客户端 BOOTPC 口）。
+# 第 4 列是 Local Address:Port：0.0.0.0:68 / [::]:68 / *:68 都算；对端列出现 68 不算。
+dhcp_udp68_bound() {
+  local out="${1:-}"
+  [[ -n "$out" ]] || return 1
+  awk 'NR>1 && $4 ~ /:68$/ {found=1; exit} END{exit !found}' <<<"$out"
+}
+
+# best-effort 探 DHCP，返回 0 时把来源写到 stdout（给 sec_firewall 打印）。
+# 顺序：显式 DHCP=1 > 运行面（dhclient/dhcpcd/dhcp6c 进程、UDP 68 监听）> 配置面。
+# 运行面必须探：NM 的连接可能只存在 DBus、dhclient 也可能被手工拉起，配置文件里查不到。
+# 配置面覆盖 networkd（含 netplan 生成到 /run 的 .network）、ifupdown、NM keyfile、netplan yaml。
+# stock ufw 的 before.rules 本来就 ACCEPT 67->68，漏探不会断租；但管理员删过那条默认规则时
+# 漏探就等于 default-deny 下不放 DHCP，租约到期失联，所以宁可多探几个面。
+dhcp_probe() {
+  local re proc f out=''
+  [[ "${DHCP:-}" == '1' ]] && { echo 'DHCP=1 指定'; return 0; }
+
+  if command -v pgrep >/dev/null 2>&1; then
+    for proc in dhclient dhcpcd dhcp6c; do
+      if pgrep -x "$proc" >/dev/null 2>&1; then echo "${proc} 进程在跑"; return 0; fi
+    done
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    out=$(ss -uln 2>/dev/null)
+  elif command -v netstat >/dev/null 2>&1; then
+    out=$(netstat -uln 2>/dev/null)
+  fi
+  if dhcp_udp68_bound "$out"; then echo 'UDP 68 有客户端监听'; return 0; fi
+
+  re='^[[:space:]]*DHCP[[:space:]]*=[[:space:]]*(yes|ipv4|ipv6|both)([[:space:]]|$)'
+  dhcp_conf_has "$re" /etc/systemd/network/*.network /run/systemd/network/*.network && {
+    echo 'systemd-networkd 配置写了 DHCP'; return 0
+  }
+  re='^[[:space:]]*iface[[:space:]]+[^[:space:]]+[[:space:]]+inet6?[[:space:]]+(dhcp|auto)([[:space:]]|$)'
+  dhcp_conf_has "$re" /etc/network/interfaces /etc/network/interfaces.d/* && {
+    echo 'ifupdown 配置写了 DHCP'; return 0
+  }
+  re='^[[:space:]]*method[[:space:]]*=[[:space:]]*auto([[:space:]]|$)'
+  dhcp_conf_has "$re" /etc/NetworkManager/system-connections/* /run/NetworkManager/system-connections/* && {
+    echo 'NetworkManager 连接是 DHCP'; return 0
+  }
+  re='^[[:space:]]*dhcp[46]?[[:space:]]*:[[:space:]]*true([[:space:]]|$)'
+  dhcp_conf_has "$re" /etc/netplan/*.yaml /etc/netplan/*.yml && {
+    echo 'netplan 配置写了 DHCP'; return 0
+  }
+  return 1
+}
+
+detect_dhcp() {
+  dhcp_probe >/dev/null
 }
 
 ####### 各段 #######
@@ -626,8 +768,13 @@ sec_firewall() {
     colorEcho ${RED} "管理口放行失败，不启用防火墙。"
     return 1
   }
-  if detect_dhcp; then
-    ufw_allow "allow proto udp from any port 67 to any port 68"
+  local dhcp_by
+  if dhcp_by=$(dhcp_probe); then
+    ufw_allow "allow proto udp from any port 67 to any port 68" || {
+      colorEcho ${RED} "DHCP 口放行失败，不启用防火墙。"
+      return 1
+    }
+    colorEcho ${GREEN} "探到 DHCP（${dhcp_by}）：放行 UDP 67→68。"
   else
     colorEcho ${BLUE} "没探到 DHCP（静态配置）：不放行 UDP 67/68；若本机其实走 DHCP 续租，加 DHCP=1 重跑。"
   fi
@@ -770,20 +917,21 @@ do_rollback() {
   colorEcho ${YELLOW} "包仍装着（vnstat/fail2ban/ufw/unattended-upgrades/needrestart），要彻底退就 apt remove；时区改回用 timedatectl set-timezone Etc/UTC。"
 }
 
-# ddns.newfuture.cc 续租：先看四个 DDNS_* 参数，缺一个就整段跳过（连包都不装，节点不留用不上的东西）
-# -> 装包 -> 用注入的参数生成最简配置 -> 按这份配置真跑一次更新做自检 -> 自检过了才装定时任务。
+# ddns.newfuture.cc 续租：先看 DDNS_DNS/ID/TOKEN 与 DDNS_IPV4/IPV6（两个域名参数至少一个），
+# 缺了就整段跳过（连包都不装，节点不留用不上的东西）
+# -> 装包 -> 用注入的参数生成最简配置（启用的族带 indexN="public"）-> 按这份配置真跑一次更新做自检 -> 自检过了才装定时任务。
 # 凭据只从运行环境/secrets 注入（文件头的 DDNS_* 变量），不写进脚本、不回显；任一步失败就停在那一步，不带着
 # 半套配置去续租。回滚见 do_rollback：删本脚本写的配置、定时任务与缓存，不卸载 ddns 本体。
 
 sec_ddns() {
   colorEcho ${BLUE} "== DDNS 配置 =="
 
-  # 四个参数缺一个就整段跳过：连 ddns 都不装——节点上不该留一个用不上的包和一份空配置
+  # 凭据三个必须有，域名两族至少一个；否则整段跳过——节点上不该留一个用不上的包和一份空配置
   local missing=''
   [[ -z "${DDNS_DNS:-}" ]] && missing+=' DDNS_DNS'
   [[ -z "${DDNS_ID:-}" ]] && missing+=' DDNS_ID'
   [[ -z "${DDNS_TOKEN:-}" ]] && missing+=' DDNS_TOKEN'
-  [[ -z "${DDNS_IPV4:-}" ]] && missing+=' DDNS_IPV4'
+  if [[ -z "${DDNS_IPV4:-}" && -z "${DDNS_IPV6:-}" ]]; then missing+=' DDNS_IPV4/IPV6'; fi
   if [[ -n "$missing" ]]; then
     colorEcho ${YELLOW} "缺${missing}（环境变量或 secrets 注入）：整段跳过，不装 ddns、不写配置、不装定时任务。"
     # 这次跳过不会停掉以前装的续租：旧配置 + 旧 timer 还在跑，得告诉运维怎么停
@@ -839,43 +987,26 @@ sec_ddns() {
     return 0
   fi
 
-  # ipv4 是要更新的域名（逗号分隔），IP 由 ddns 自己从公网接口取；域名先过一遍字符集，别往 JSON 里塞脏值
-  local domains='' one IFS=','
-  for one in ${DDNS_IPV4}; do
-    one=$(printf '%s' "$one" | tr -d '[:space:]')
-    [[ -z "$one" ]] && continue
-    if [[ ! "$one" =~ ^[A-Za-z0-9*_.-]+$ ]]; then
-      colorEcho ${RED} "DDNS_IPV4 里的 '${one}' 不像域名：不写配置。"
-      return 0
-    fi
-    domains+="${domains:+, }\"${one}\""
-  done
-  if [[ -z "$domains" ]]; then
-    colorEcho ${YELLOW} "DDNS_IPV4 里没有有效域名：不写配置。"
+  # 域名/启用的族/indexN 全在这一处算；坏域名时不写配置（ddns_config_text 自己说明原因）
+  local config_text
+  if ! config_text=$(ddns_config_text "$DDNS_DNS" "$DDNS_ID" "$DDNS_TOKEN" "${DDNS_IPV4:-}" "${DDNS_IPV6:-}"); then
     return 0
   fi
 
-  # 只写本脚本管的四个字段；目录 700、文件 600，token 不进任何输出
+  # 只写本脚本管的字段；目录 700、文件 600，token 不进任何输出
   if ! mkdir -p "$DDNS_CONFIG_DIR"; then
     colorEcho ${RED} "建不了 ${DDNS_CONFIG_DIR}：不写配置。"
     return 0
   fi
   chmod 700 "$DDNS_CONFIG_DIR" 2>/dev/null  # 目录/文件只给 root；chmod 不支持的文件系统上不因此中断
   local before='无'
-  [[ -f "$DDNS_CONFIG" ]] && before=$(sed -n 's/.*"ipv4".*\[\(.*\)\].*/\1/p' "$DDNS_CONFIG" | tr -d '"')
+  [[ -f "$DDNS_CONFIG" ]] && before=$(ddns_config_domains "$DDNS_CONFIG" | tr '\n' ' ')
   local tmp
   tmp=$(mktemp "$DDNS_CONFIG_DIR/.config.XXXXXX") || return 0
-  cat >"$tmp" <<EOF
-{
-  "dns": "${DDNS_DNS}",
-  "id": "${DDNS_ID}",
-  "token": "${DDNS_TOKEN}",
-  "ipv4": [${domains}]
-}
-EOF
+  printf '%s\n' "$config_text" >"$tmp"
   chmod 600 "$tmp" 2>/dev/null
   mv -f "$tmp" "$DDNS_CONFIG"
-  colorEcho ${GREEN} "ddns 配置已写：${DDNS_CONFIG}（ipv4 域名：${before:-无} -> ${DDNS_IPV4}）"
+  colorEcho ${GREEN} "ddns 配置已写：${DDNS_CONFIG}（域名：${before:-无} -> ${DDNS_IPV4:-}${DDNS_IPV4:+, }${DDNS_IPV6:-}；IP 获取：index4/index6=public）"
 
   # 自检：按这份配置真跑一次更新（debug 日志），过了再装任务，免得装个永远失败的定时器。
   # 失败不贴 ddns 的输出——debug 日志会带凭据，排障让运维自己跑同一条命令看。
@@ -969,6 +1100,78 @@ do_status() {
     ust=$(ufw status 2>/dev/null | awk '/^Status:/{print $2; exit}')
     [[ "$ust" == 'active' ]] && ucol=$(cv "$GREEN" active) || ucol=$(cv "$YELLOW" "${ust:-未装}")
     srow 防火 "$ucol"
+  fi
+
+  # ddns：只有装过 ddns 或留着配置时才显示，避免没装 ddns 的节点多出一整块空读数
+  local _ddns_bin
+  _ddns_bin=$(ddns_resolve 2>/dev/null || true)
+  if [[ -n "${_ddns_bin:-}" || -f "$DDNS_CONFIG" ]]; then
+    if [[ -n "${_ddns_bin:-}" ]]; then
+      local _tout _installed _enabled _interval _tcol
+      _tout=$("$_ddns_bin" task --status 2>/dev/null)
+      _installed=$(printf '%s\n' "$_tout" | sed -n 's/^[[:space:]]*Installed:[[:space:]]*//p' | head -n1)
+      _enabled=$(printf '%s\n' "$_tout" | sed -n 's/^[[:space:]]*Enabled:[[:space:]]*//p' | head -n1)
+      _interval=$(printf '%s\n' "$_tout" | sed -n 's/^[[:space:]]*Interval:[[:space:]]*//p' | head -n1)
+      case "${_installed:-}" in
+      Yes)
+        if [[ "$_enabled" == 'True' ]]; then
+          _tcol=$(cv "$GREEN" "Installed/Enabled${_interval:+（$_interval）}")
+        else
+          _tcol=$(cv "$YELLOW" 'Installed 但 disabled')
+        fi
+        ;;
+      *) _tcol=$(cv "$YELLOW" "${_installed:-未装任务}") ;;
+      esac
+      srow ddns "$_tcol"
+    else
+      srow ddns "$(cv "$YELLOW" 'ddns 未找到可执行文件')"
+    fi
+    if [[ -n "$SYSTEMCTL_CMD" ]]; then
+      local _tstate
+      _tstate=$(systemctl is-active ddns.timer 2>/dev/null)
+      if [[ "$_tstate" == 'active' ]]; then
+        srow 定时 "$(cv "$GREEN" "$_tstate")"
+      else
+        srow 定时 "$(cv "$YELLOW" "${_tstate:-无}")"
+      fi
+    fi
+    local _domains _d
+    _domains=$(ddns_config_domains "$DDNS_CONFIG" 2>/dev/null)
+    if [[ -n "$_domains" ]]; then
+      srow 域名 "$(printf '%s' "$_domains" | tr '\n' ' ')"
+    elif [[ -f "$DDNS_CONFIG" ]]; then
+      srow 域名 "$(cv "$YELLOW" '配置里没有 ipv4/ipv6')"
+    else
+      srow 域名 "$(cv "$YELLOW" '无配置')"
+    fi
+    # 最近 IP：ddns 上次写入的缓存 + 当前 DNS 解析
+    local _cache_file _cache_summary
+    _cache_file=$(ls -t /tmp/ddns.*.cache 2>/dev/null | head -n1)
+    if [[ -n "${_cache_file:-}" && -r "$_cache_file" ]]; then
+      if command -v python3 >/dev/null 2>&1 && python3 -c 'import json' >/dev/null 2>&1; then
+        _cache_summary=$(python3 - "$_cache_file" 2>/dev/null <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print('  '.join('{}={}'.format(k.split(':')[0], v) for k, v in d.items()))
+except Exception:
+    print(open(sys.argv[1]).read().strip())
+PY
+      )
+      else
+        _cache_summary=$(cat "$_cache_file" 2>/dev/null)
+      fi
+      [[ -z "${_cache_summary:-}" ]] && _cache_summary=$(cat "$_cache_file" 2>/dev/null)
+    fi
+    srow 缓存 "${_cache_summary:-取不到}"
+    local _dnsinfo=''
+    while IFS= read -r _d; do
+      [[ -z "$_d" ]] && continue
+      local _ip
+      _ip=$(getent hosts "$_d" 2>/dev/null | awk '{print $1; exit}')
+      _dnsinfo+="${_d}=${_ip:-无}  "
+    done <<<"$_domains"
+    srow 解析 "${_dnsinfo:-取不到}"
   fi
 
   local pa rl pac rlc note='' note2=''
@@ -1079,11 +1282,14 @@ Help() {
   PANEL_IP     面板出口 IP，管理口只对它开放。
   PUSH_PORT    节点管理口（面板节点编辑页 push_port），TCP。
   REBOOT_TIME  条件重启时刻，默认 05:00，三台错开各给不同值。
-  DHCP=1       走 DHCP 续租时放行 UDP 67/68（默认自动探测）。
+  DHCP=1       强制认定走 DHCP 续租、放行 UDP 67/68（默认探进程/UDP 68/配置文件）。
   AUTO_CONFIRM=1  跑完即确认、不起 10 分钟自动还原保险（默认仍起保险防锁死）。
                仅在你已验过密钥登录或自负锁死风险时用；退回仍走 --rollback。
-  DDNS_DNS / DDNS_ID / DDNS_TOKEN / DDNS_IPV4  ddns 续租：提供方名 / 账号 / 密钥 / 域名（逗号分隔），
-               只从环境变量或 secrets 注入，不写脚本里；缺一个就整段跳过（不装 ddns、不写配置、不装任务）。
+  DDNS_DNS / DDNS_ID / DDNS_TOKEN / DDNS_IPV4 / DDNS_IPV6
+               ddns 续租：提供方名 / 账号 / 密钥 / IPv4 域名 / IPv6 域名（各逗号分隔）。
+               只从环境变量或 secrets 注入，不写脚本里；凭据缺一或两族域名都空就整段跳过。
+               启用的族写 index4/index6 = "public"，按公网 API 取 IP，不用 default 的探测结果。
+  GH_PROXY      GitHub 镜像/加速前缀（如 https://ghfast.top/），首跳 curl 的 URL 也要加；空则直连。
 
 子命令（写给 bash）：
   --confirm    开新会话确认能登录后取消 10 分钟自动还原。
@@ -1092,6 +1298,7 @@ Help() {
   --status     只读一条读数。
   --self-update  拉最新 harden.sh 覆盖本地安装（stdin 形态装到 /usr/local/bin/vnet-harden）；
                下载失败/语法不过不覆盖。只升脚本自身，升 vnet 二进制走 upgrade.sh。
+  --gh-proxy URL  等同 GH_PROXY；写给 bash，不是 curl。
   --version    打印本脚本版本。
   -h, --help   本帮助。
 
@@ -1112,11 +1319,18 @@ main() {
     --status) mode='status' ;;
     --version) mode='version' ;;
     --self-update) mode='selfupdate' ;;
+    --gh-proxy) GH_PROXY="${2}"; shift ;;
     -h | --help) mode='help' ;;
     *) colorEcho ${YELLOW} "忽略认不出的参数：$1（开关写给 bash：bash -s -- --status）" ;;
     esac
     shift
   done
+
+  # GitHub 镜像前缀归一化：无论是否带尾斜杠，统一成 "prefix/"
+  if [[ -n "$GH_PROXY" ]]; then
+    GH_PROXY="${GH_PROXY%/}/"
+    RAW_BASE="${GH_PROXY}${RAW_BASE}"
+  fi
 
   [[ "$mode" == 'help' ]] && { Help; return 0; }
   [[ "$mode" == 'status' ]] && { do_status; return 0; }
