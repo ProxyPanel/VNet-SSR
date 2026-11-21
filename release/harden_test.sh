@@ -125,6 +125,14 @@ expect_eq 'status压制去行号' 'sshd_config: PasswordAuthentication yes' "$(s
 expect_eq 'status压制d目录' 'sshd_config.d/50-cloud-init.conf: PasswordAuthentication yes' "$(ssh_pa_label '/etc/ssh/sshd_config.d/50-cloud-init.conf:1: PasswordAuthentication yes')"
 expect_eq 'status压制空' '' "$(ssh_pa_label '')"
 
+# kernel_origin：第三方内核要在读数里区分出来（只认 uname -r 的特征串）
+expect_eq '内核来源xanmod' '第三方 xanmod' "$(kernel_origin '6.12.9-x64v3-xanmod1')"
+expect_eq '内核来源bbrplus' '第三方 bbrplus' "$(kernel_origin '5.10.27-bbrplus')"
+expect_eq '内核来源elrepo' '第三方 elrepo' "$(kernel_origin '6.11.3-1.el9.elrepo.x86_64')"
+expect_eq '内核来源debian' '发行版' "$(kernel_origin '6.12.48-amd64')"
+expect_eq '内核来源ubuntu' '发行版' "$(kernel_origin '6.8.0-45-generic')"
+expect_eq '内核来源空' '取不到' "$(kernel_origin '')"
+
 # ddns：没给全参数就整段跳过，连 ddns 都不装（真机上装了也是白装）
 out=$(DDNS_DNS= DDNS_ID= DDNS_TOKEN= DDNS_IPV4= sec_ddns 2>&1 >/dev/null)
 expect_has 'ddns段标题' '== DDNS 配置 ==' "$out"

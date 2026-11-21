@@ -51,6 +51,9 @@ before_qd=$(sysctl -qn net.core.default_qdisc 2>/dev/null)
 before_ct=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)
 before_cte=$(cat /proc/sys/net/netfilter/nf_conntrack_tcp_timeout_established 2>/dev/null)
 before_mp=$(cat /proc/sys/net/ipv4/tcp_mtu_probing 2>/dev/null)
+before_sc=$(cat /proc/sys/net/core/somaxconn 2>/dev/null)
+before_tr=$(cat /proc/sys/net/ipv4/tcp_tw_reuse 2>/dev/null)
+before_ts=$(cat /proc/sys/net/ipv4/tcp_timestamps 2>/dev/null)
 before_nro=$(cat /proc/sys/fs/nr_open 2>/dev/null)
 before_fd=$(systemctl show vnet -p LimitNOFILE --value 2>/dev/null)
 before_real=$(procOpenFiles)
@@ -58,6 +61,7 @@ before_real=$(procOpenFiles)
 colorEcho ${BLUE} "调优前的值："
 echo "  拥塞控制=${before_cc:-取不到} qdisc=${before_qd:-取不到} mtu_probing=${before_mp:-取不到}"
 echo "  conntrack_max=${before_ct:-未加载} tcp_established=${before_cte:-未加载} nr_open=${before_nro:-取不到}"
+echo "  somaxconn=${before_sc:-取不到} tw_reuse=${before_tr:-取不到} timestamps=${before_ts:-取不到}"
 echo "  vnet 连接数上限：配置=${before_fd:-服务不存在} 进程实际=${before_real}"
 
 # 拥塞控制：已经是任一 BBR 变体就不动它，覆盖成原生 bbr 等于把装机者故意选的东西降级
@@ -95,11 +99,15 @@ mkdir -p /etc/systemd/system/vnet.service.d
   echo 'net.ipv4.tcp_keepalive_probes = 4'
   echo 'net.core.netdev_max_backlog = 8192'
   echo 'net.ipv4.tcp_max_syn_backlog = 4096'
+  # accept 队列上限：tcp_max_syn_backlog 只管半连接，已完成握手但没人 accept 的连接靠这个队列
+  echo 'net.core.somaxconn = 32768'
   echo 'net.core.rmem_max = 16777216'
   echo 'net.core.wmem_max = 16777216'
   echo 'net.ipv4.tcp_rmem = 4096 131072 16777216'
   echo 'net.ipv4.tcp_wmem = 4096 131072 16777216'
   echo 'net.ipv4.ip_local_port_range = 20000 60999'
+  # 主动连上游时复用 TIME_WAIT 里的四元组，省本地端口（要 tcp_timestamps=1 才生效，下面有检查）
+  echo 'net.ipv4.tcp_tw_reuse = 1'
   echo "fs.nr_open = $NR_OPEN"
   # 这几行是防中间人重定向与源路由，不改连通性
   echo 'net.ipv4.conf.all.accept_source_route = 0'
@@ -144,6 +152,12 @@ EOF
 sysctl --system >/dev/null 2>&1
 systemctl daemon-reload 2>/dev/null
 
+# tcp_tw_reuse 只在双方都带时间戳时生效：哪个文件把 tcp_timestamps 关了，这一行就是死配置。
+# 只提示，不替他改——改回去会和关它的人打架，破坏“只动自己写的文件”
+if [[ $(cat /proc/sys/net/ipv4/tcp_timestamps 2>/dev/null) == '0' ]]; then
+  colorEcho ${YELLOW} "tcp_timestamps=0：tcp_tw_reuse 因此不生效（TW 复用靠时间戳判重），查 /etc/sysctl.d 里是谁关的。"
+fi
+
 # 时间不同步会让流量批次去重和日志对齐出错；装不上就只报一行，不挡后面的活
 if command -v timedatectl >/dev/null 2>&1 && [[ $(timedatectl show -p NTPSynchronized --value 2>/dev/null) == 'no' ]]; then
   # 已经装过就别再报「装好了」：同步要几十秒才到位，重跑时会连着好几轮都显示 no
@@ -172,9 +186,13 @@ after_qd=$(sysctl -qn net.core.default_qdisc 2>/dev/null)
 after_ct=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)
 after_cte=$(cat /proc/sys/net/netfilter/nf_conntrack_tcp_timeout_established 2>/dev/null)
 after_mp=$(cat /proc/sys/net/ipv4/tcp_mtu_probing 2>/dev/null)
+after_sc=$(cat /proc/sys/net/core/somaxconn 2>/dev/null)
+after_tr=$(cat /proc/sys/net/ipv4/tcp_tw_reuse 2>/dev/null)
+after_ts=$(cat /proc/sys/net/ipv4/tcp_timestamps 2>/dev/null)
 after_nro=$(cat /proc/sys/fs/nr_open 2>/dev/null)
 echo "  拥塞控制=${after_cc:-取不到} qdisc=${after_qd:-取不到} mtu_probing=${after_mp:-取不到}"
 echo "  conntrack_max=${after_ct:-未加载} tcp_established=${after_cte:-未加载} nr_open=${after_nro:-取不到}"
+echo "  somaxconn=${after_sc:-取不到} tw_reuse=${after_tr:-取不到} timestamps=${after_ts:-取不到}"
 echo "  vnet 连接数上限：配置=$(systemctl show vnet -p LimitNOFILE --value 2>/dev/null) 进程实际=$(procOpenFiles)"
 echo "  配置文件：$CONF"
 echo "  一键还原：bash release/tune.sh --rollback"

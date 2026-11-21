@@ -35,7 +35,7 @@
 # 不确认就自动退回。sshd 配置先用 sshd -T 断言真生效才 reload，公钥先用 ssh-keygen -lf 验过才写。
 
 RAW_BASE='https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master'
-HARDEN_VERSION='2026-11-21.6'
+HARDEN_VERSION='2026-11-21.8'
 
 STATE_DIR='/etc/vnet-harden'
 STATE_FILE="$STATE_DIR/state.env"
@@ -149,6 +149,33 @@ colorEcho() { echo -e "\033[${1}${@:2}\033[0m" 1>&2; }
 cv() { printf '\033[%s%s\033[0m' "$1" "$2"; }
 # 读数行：标签统一两个汉字（显示等宽），不用 printf 字节 padding（中文按字节补会错位）
 srow() { printf '  %s  %s\n' "$1" "$2"; }
+
+# 内核来源：XanMod/bbrplus/elrepo 这些第三方内核不在发行版安全更新覆盖内，读数里要标出来。
+# 只按 uname -r 的特征串认，不去翻 apt 源——那既需要 root，也会被后续改源误导
+kernel_origin() {
+  case "${1:-}" in
+  '' | unknown) echo '取不到' ;;
+  *xanmod*) echo '第三方 xanmod' ;;
+  *bbrplus*) echo '第三方 bbrplus' ;;
+  *elrepo*) echo '第三方 elrepo' ;;
+  *) echo '发行版' ;;
+  esac
+}
+
+# ddns 的 console script 常被 pipx 装在 ~/.local/bin，而 root 的非交互/新 shell PATH 里通常没有这一项，
+# 于是 `ddns` 报 command not found（定时器不靠它，它靠 python -m ddns，所以 timer 照跑）。这里把所有
+# 常见安装位置都查一遍，返回第一个可执行路径；找不到返回 1。
+ddns_resolve() {
+  local p
+  if p=$(command -v ddns 2>/dev/null) && [[ -n "$p" && -x "$p" ]]; then
+    printf '%s\n' "$p"
+    return 0
+  fi
+  for p in /usr/local/bin/ddns "$HOME/.local/bin/ddns" /root/.local/bin/ddns; do
+    [[ -x "$p" ]] && { printf '%s\n' "$p"; return 0; }
+  done
+  return 1
+}
 
 # 节点 id 取自节点配置（不依赖 jq）；文件不存在/无该键返回空
 node_id_from_config() {
@@ -729,7 +756,7 @@ do_rollback() {
   rm -rf "$DDNS_CONFIG_DIR"
   local ddns_bin
   ddns_bin=$(command -v ddns 2>/dev/null || true)
-  [[ -z "$ddns_bin" && -x "$HOME/.local/bin/ddns" ]] && ddns_bin="$HOME/.local/bin/ddns"
+  [[ -z "$ddns_bin" ]] && ddns_bin=$(ddns_resolve 2>/dev/null || true)
   [[ -n "$ddns_bin" ]] && "$ddns_bin" task --uninstall >/dev/null 2>&1
   # ddns 卸载不了（不在 PATH）时，按单元里的配置路径认领后自己删，别留个指向已删配置的定时器
   if [[ -f /etc/systemd/system/ddns.service ]] && grep -qF "$DDNS_CONFIG" /etc/systemd/system/ddns.service 2>/dev/null; then
@@ -764,20 +791,38 @@ sec_ddns() {
       colorEcho ${YELLOW} "注意：本机还留着之前装的 ddns 续租（配置 + 定时任务），仍在按旧配置跑。"
       colorEcho ${YELLOW} "要停掉跑 harden.sh --rollback（删配置与 timer，不卸包）。"
     fi
+    # 之前装过 ddns 但 console script 不在 PATH 时，顺手把可执行文件链到 /usr/local/bin，
+    # 这样手动 `ddns task --status` 才能跑起来（不装新包、不改配置）
+    local _ddns_bin
+    _ddns_bin=$(ddns_resolve 2>/dev/null) || true
+    if [[ -n "${_ddns_bin:-}" && "$_ddns_bin" != /usr/local/bin/ddns ]]; then
+      ln -sf "$_ddns_bin" /usr/local/bin/ddns 2>/dev/null || true
+      command -v ddns >/dev/null 2>&1 && colorEcho ${GREEN} "ddns 已链到 /usr/local/bin，现在可直接跑 ddns task --status。"
+    fi
     return 0
   fi
 
-  if ! command -v ddns >/dev/null 2>&1; then
+  # 先在常见位置找一遍：新 shell 的 PATH 可能没带 ~/.local/bin，装好的 ddns 也会被误判成没装
+  if ! ddns_resolve >/dev/null 2>&1; then
     if ! apt_install pipx; then
       colorEcho ${YELLOW} "pipx 装不上（apt 源/网络），跳过 ddns，其余段照常。"
       return 0
     fi
-    if ! pipx install ddns >/dev/null 2>&1; then
-      colorEcho ${YELLOW} "pipx install ddns 失败（看 pypi 通不通），跳过续租。"
+    # pipx 对已安装的包返回非 0：先装，装不上再试 upgrade（覆盖「装过但这次 command -v 找不到」的重跑）
+    if ! pipx install ddns >/dev/null 2>&1 && ! pipx upgrade ddns >/dev/null 2>&1; then
+      colorEcho ${YELLOW} "pipx install/upgrade ddns 失败（看 pypi 通不通），跳过续租。"
       return 0
     fi
-    PATH="$PATH:$HOME/.local/bin"  # pipx 把命令装在 ~/.local/bin，root 的非交互 PATH 里通常没有
   fi
+  # 把 console script 链到 /usr/local/bin：它是默认 PATH 的一部分，所有 shell 与 systemd 都能找到，
+  # 不再依赖 ~/.local/bin 是否在 PATH 里（pipx ensurepath 只改 rc 文件，非交互 shell 读不到）
+  local _ddns_bin
+  _ddns_bin=$(ddns_resolve 2>/dev/null) || true
+  if [[ -n "${_ddns_bin:-}" && "$_ddns_bin" != /usr/local/bin/ddns ]]; then
+    ln -sf "$_ddns_bin" /usr/local/bin/ddns 2>/dev/null || true
+  fi
+  # 当前进程 PATH 也保证带上，避免本脚本后续调用落空
+  if ! command -v ddns >/dev/null 2>&1; then PATH="/usr/local/bin:$PATH"; fi
   if ! command -v ddns >/dev/null 2>&1; then
     colorEcho ${YELLOW} "ddns 装完仍不在 PATH（pipx 默认 $HOME/.local/bin），跳过续租。"
     return 0
@@ -862,6 +907,16 @@ do_status() {
     sysline+="  $(cv "$RED" '！EOL 无安全补丁，先升 12/13')"
   fi
   srow 系统 "$sysline"
+
+  local krel korig kcol
+  krel=$(uname -r 2>/dev/null)
+  korig=$(kernel_origin "$krel")
+  case "$korig" in
+  发行版) kcol=$(cv "$GREEN" "$korig") ;;
+  取不到) kcol=$(cv "$YELLOW" "$korig") ;;
+  *) kcol=$(cv "$YELLOW" "$korig（需自维护安全更新）") ;;
+  esac
+  srow 内核 "${krel:-取不到}  $kcol"
 
   if [[ -n "$SYSTEMCTL_CMD" ]]; then
     local vact vver vcol

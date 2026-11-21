@@ -169,7 +169,7 @@ curl -fsSL --connect-timeout 8 https://raw.githubusercontent.com/ProxyPanel/VNet
 
 子命令（写给 bash）：`--confirm` 取消保险；`--auto-confirm` 同 `AUTO_CONFIRM=1`；`--rollback` 退回；`--status` 只读读数；`--self-update` 拉最新脚本覆盖本地；`--version` 打印脚本版本；`--help`。
 
-`--status` 一行一项（标签两字对齐 + 语义着色：绿=到位、黄=需注意/未到位、红=磁盘≥90% 或 EOL）：`系统`（发行版与 EOL 警示）/`节点`/`版本`/`上限`（fd）/`编号`（取自 config.json 的 node_id）/`拥塞`（cc + qdisc）/`时区`（+ NTP，取 systemd 的 `NTPSynchronized`：未启用 timesyncd、没网、刚开机未同步都会是 `no`；用 chrony/ntpd 替代 timesyncd 时它可能一直报 `no`，得用 `chronyc tracking` / `ntpq -p` 看真实状态）/`流量`（vnstat 今日 rx/tx）/`封禁`（fail2ban 在封数与 IP）/`防火`（ufw）/`认证`（`密码=` 与 `root=`；`sshd -T` 的 `without-password` 与 `prohibit-password` 是同一个值，统一显示 `prohibit-password`）/`磁盘`/`重启`/`保险`。没写 SSH drop-in 时多一行 `加固` 说明原因（没给公钥/公钥不对/`sshd -t` 不过/写了没生效）；「写了没生效」再跟一行 `压制`，只给文件与语句（如 `sshd_config: PasswordAuthentication yes`、`sshd_config.d/50-cloud-init.conf: PasswordAuthentication yes`），**不带行号**——行号只在跑的那会儿准，配置改过就会指错。
+`--status` 一行一项（标签两字对齐 + 语义着色：绿=到位、黄=需注意/未到位、红=磁盘≥90% 或 EOL）：`系统`（发行版与 EOL 警示）/`内核`（`uname -r` 与来源：`xanmod`/`bbrplus`/`elrepo` 这类第三方内核标黄「第三方 …（需自维护安全更新）」——它们拿不到 Debian 安全团队的补丁，`unattended-upgrades` 也管不到）/`节点`/`版本`/`上限`（fd）/`编号`（取自 config.json 的 node_id）/`拥塞`（cc + qdisc）/`时区`（+ NTP，取 systemd 的 `NTPSynchronized`：未启用 timesyncd、没网、刚开机未同步都会是 `no`；用 chrony/ntpd 替代 timesyncd 时它可能一直报 `no`，得用 `chronyc tracking` / `ntpq -p` 看真实状态）/`流量`（vnstat 今日 rx/tx）/`封禁`（fail2ban 在封数与 IP）/`防火`（ufw）/`认证`（`密码=` 与 `root=`；`sshd -T` 的 `without-password` 与 `prohibit-password` 是同一个值，统一显示 `prohibit-password`）/`磁盘`/`重启`/`保险`。没写 SSH drop-in 时多一行 `加固` 说明原因（没给公钥/公钥不对/`sshd -t` 不过/写了没生效）；「写了没生效」再跟一行 `压制`，只给文件与语句（如 `sshd_config: PasswordAuthentication yes`、`sshd_config.d/50-cloud-init.conf: PasswordAuthentication yes`），**不带行号**——行号只在跑的那会儿准，配置改过就会指错。
 
 纯 `curl | bash -s` 不落盘，事后子命令需再拉一次。想免下载就存成本地命令：`curl -fsSL -o /usr/local/bin/vnet-harden <地址> && chmod +x /usr/local/bin/vnet-harden`，之后 `vnet-harden --status / --rollback`。本地副本会过期，用 `vnet-harden --self-update` 拉最新覆盖（`curl -f` + `bash -n` 校验，下载失败或语法不过**不覆盖**、旧版继续可用；stdin 形态没有本地文件时装到 `/usr/local/bin/vnet-harden`）。self-update 只升 harden 脚本自身，升 vnet 二进制走 `upgrade.sh`，别混。
 
@@ -179,7 +179,7 @@ EOL：Debian 11 已过安全支持期（LTS 2026-08-31 结束），自动补丁�
 
 **首次上机验收**：脚本的 Linux 段（sshd/ufw/apt/systemd）未在开发机验证，开发机只跑了语法与纯函数测试（`bash release/harden_test.sh`）。先在一台**一次性 Debian 12/13 VPS** 上跑通下列清单，再上生产节点：
 
-- [ ] `--status` 核对：ufw=active、`认证` 行 `密码=no root=prohibit-password`、fail2ban sshd jail 在、vnstat 统计的是出网网卡、`保险` 行在 `--confirm` 前显示计时中。
+- [ ] `--status` 核对：ufw=active、`认证` 行 `密码=no root=prohibit-password`、fail2ban sshd jail 在、vnstat 统计的是出网网卡、`保险` 行在 `--confirm` 前显示计时中、`内核` 行在发行版内核上是绿字 `发行版`（装了 XanMod/bbrplus/elrepo 内核时应为黄字「第三方 …」）。
 - [ ] 压制归因演练：在 `sshd_config` 的 `Include` 之前留一行 `PasswordAuthentication yes` 跑一遍，红字应说「主配置…Include 之前」并给 `f=…` + 按关键字注释的步骤；再把 `sshd_config.d/50-cloud-init.conf` 设成 `yes`、主配置那行注掉，红字应改说「按文件名排在 99-vnet-harden.conf 之前」并额外提示 cloud-init 的 `ssh_pwauth: false`。两处提示都不带行号，`--status` 的 `压制` 行同样只到文件与语句。
 - [ ] ddns：`systemctl list-timers | grep ddns` 有 `ddns.timer`、`ddns task --status` 显示 Installed/Enabled，域名已解析到本机公网 IP；`--rollback` 后 timer 与 `/etc/ddns-harden` 都不在了。
 - [ ] 新会话密钥登录成功 → `--confirm`；`systemctl list-timers` 里没有 `vnet-harden-revert`。
