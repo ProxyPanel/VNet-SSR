@@ -35,7 +35,7 @@
 # 不确认就自动退回。sshd 配置先用 sshd -T 断言真生效才 reload，公钥先用 ssh-keygen -lf 验过才写。
 
 RAW_BASE='https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master'
-HARDEN_VERSION='2026-11-21.8'
+HARDEN_VERSION='2026-11-21.9'
 
 STATE_DIR='/etc/vnet-harden'
 STATE_FILE="$STATE_DIR/state.env"
@@ -175,6 +175,38 @@ ddns_resolve() {
     [[ -x "$p" ]] && { printf '%s\n' "$p"; return 0; }
   done
   return 1
+}
+
+# 从 ddns 配置里取出要更新的域名（ipv4 + ipv6），一行一个；不依赖 jq，python3 可用时优先用它解析 JSON，
+# 否则用 sed 兜底（只认简单的 ["a","b"] 形式）。文件不存在/解析失败返回空
+ddns_config_domains() {
+  local cfg="${1:-$DDNS_CONFIG}"
+  [[ -f "$cfg" ]] || return 0
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import json' >/dev/null 2>&1; then
+    local _out
+    _out=$(python3 - "$cfg" 2>/dev/null <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+for key in ('ipv4', 'ipv6'):
+    for x in (d.get(key) or []):
+        if isinstance(x, str) and x.strip():
+            print(x.strip())
+PY
+)
+    if [[ -n "$_out" ]]; then
+      printf '%s\n' "$_out"
+      return 0
+    fi
+  fi
+  # 兜底：分别抓 ipv4/ipv6 两个数组，避免贪心 .* 只抓到最后一个
+  local _arr
+  for _arr in $(grep -oE '"ipv[46]"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$cfg" 2>/dev/null); do
+    printf '%s\n' "$_arr" | sed -n 's/.*\[\(.*\)\].*/\1/p' | tr -d '"' | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$'
+  done
+  return 0
 }
 
 # 节点 id 取自节点配置（不依赖 jq）；文件不存在/无该键返回空
@@ -969,6 +1001,78 @@ do_status() {
     ust=$(ufw status 2>/dev/null | awk '/^Status:/{print $2; exit}')
     [[ "$ust" == 'active' ]] && ucol=$(cv "$GREEN" active) || ucol=$(cv "$YELLOW" "${ust:-未装}")
     srow 防火 "$ucol"
+  fi
+
+  # ddns：只有装过 ddns 或留着配置时才显示，避免没装 ddns 的节点多出一整块空读数
+  local _ddns_bin
+  _ddns_bin=$(ddns_resolve 2>/dev/null || true)
+  if [[ -n "${_ddns_bin:-}" || -f "$DDNS_CONFIG" ]]; then
+    if [[ -n "${_ddns_bin:-}" ]]; then
+      local _tout _installed _enabled _interval _tcol
+      _tout=$("$_ddns_bin" task --status 2>/dev/null)
+      _installed=$(printf '%s\n' "$_tout" | sed -n 's/^[[:space:]]*Installed:[[:space:]]*//p' | head -n1)
+      _enabled=$(printf '%s\n' "$_tout" | sed -n 's/^[[:space:]]*Enabled:[[:space:]]*//p' | head -n1)
+      _interval=$(printf '%s\n' "$_tout" | sed -n 's/^[[:space:]]*Interval:[[:space:]]*//p' | head -n1)
+      case "${_installed:-}" in
+      Yes)
+        if [[ "$_enabled" == 'True' ]]; then
+          _tcol=$(cv "$GREEN" "Installed/Enabled${_interval:+（$_interval）}")
+        else
+          _tcol=$(cv "$YELLOW" 'Installed 但 disabled')
+        fi
+        ;;
+      *) _tcol=$(cv "$YELLOW" "${_installed:-未装任务}") ;;
+      esac
+      srow ddns "$_tcol"
+    else
+      srow ddns "$(cv "$YELLOW" 'ddns 未找到可执行文件')"
+    fi
+    if [[ -n "$SYSTEMCTL_CMD" ]]; then
+      local _tstate
+      _tstate=$(systemctl is-active ddns.timer 2>/dev/null)
+      if [[ "$_tstate" == 'active' ]]; then
+        srow 定时 "$(cv "$GREEN" "$_tstate")"
+      else
+        srow 定时 "$(cv "$YELLOW" "${_tstate:-无}")"
+      fi
+    fi
+    local _domains _d
+    _domains=$(ddns_config_domains "$DDNS_CONFIG" 2>/dev/null)
+    if [[ -n "$_domains" ]]; then
+      srow 域名 "$(printf '%s' "$_domains" | tr '\n' ' ')"
+    elif [[ -f "$DDNS_CONFIG" ]]; then
+      srow 域名 "$(cv "$YELLOW" '配置里没有 ipv4/ipv6')"
+    else
+      srow 域名 "$(cv "$YELLOW" '无配置')"
+    fi
+    # 最近 IP：ddns 上次写入的缓存 + 当前 DNS 解析
+    local _cache_file _cache_summary
+    _cache_file=$(ls -t /tmp/ddns.*.cache 2>/dev/null | head -n1)
+    if [[ -n "${_cache_file:-}" && -r "$_cache_file" ]]; then
+      if command -v python3 >/dev/null 2>&1 && python3 -c 'import json' >/dev/null 2>&1; then
+        _cache_summary=$(python3 - "$_cache_file" 2>/dev/null <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print('  '.join('{}={}'.format(k.split(':')[0], v) for k, v in d.items()))
+except Exception:
+    print(open(sys.argv[1]).read().strip())
+PY
+      )
+      else
+        _cache_summary=$(cat "$_cache_file" 2>/dev/null)
+      fi
+      [[ -z "${_cache_summary:-}" ]] && _cache_summary=$(cat "$_cache_file" 2>/dev/null)
+    fi
+    srow 缓存 "${_cache_summary:-取不到}"
+    local _dnsinfo=''
+    while IFS= read -r _d; do
+      [[ -z "$_d" ]] && continue
+      local _ip
+      _ip=$(getent hosts "$_d" 2>/dev/null | awk '{print $1; exit}')
+      _dnsinfo+="${_d}=${_ip:-无}  "
+    done <<<"$_domains"
+    srow 解析 "${_dnsinfo:-取不到}"
   fi
 
   local pa rl pac rlc note='' note2=''
