@@ -1,6 +1,6 @@
 # 节点运维
 
-目录：[看日志](#看日志) · [版本与来源](#版本与来源) · [监听地址与多 IP / 双栈](#监听地址与多-ip--双栈) · [手工对账](#手工对账) · [症状与先查什么](#症状与先查什么) · [本机 DNS 缓存](#本机-dns-缓存) · [转发收口的日志摘要](#转发收口的日志摘要)
+目录：[看日志](#看日志) · [版本与来源](#版本与来源) · [监听地址与多 IP / 双栈](#监听地址与多-ip--双栈) · [手工对账](#手工对账) · [症状与先查什么](#症状与先查什么) · [本机 DNS 缓存](#本机-dns-缓存) · [转发收口的日志摘要](#转发收口的日志摘要) · [系统加固与自动运维](#系统加固与自动运维)
 
 节点侧的命令与日志与本后端一一对应；面板侧的字段名、日志串和命令按它自己的实现对应过去。
 
@@ -121,3 +121,70 @@ journalctl -u vnet | grep "copy ended"
 ```
 
 看趋势即可；只有 `conn_reset` 或 `other` 抬头才需要去查网络或对端。
+
+## 系统加固与自动运维
+
+`release/harden.sh` 是独立的一步（与 deploy/tune/upgrade 同族），把前置配置与安全加固一次做完。deploy.sh 的边界不动：装机不隐含改整机，加固单独跑。幂等重跑、只写自己生成的配置、`--rollback` 退回、改前改后打印读数。
+
+做的事：
+
+- 开跑前 `dpkg --audit` 预检：有没配完的包就黄字列出（之后每笔 apt 事务都会被它卡住），提示 `dpkg --configure -a` 重试或 purge 掉那个包再重跑——**只提示，不代修包**。
+- 时区 `Asia/Shanghai`；vnstat 接口流量统计（与面板按用户记账互为对照：接口总量 vs 用户分量）。
+- ddns 续租（ddns.newfuture.cc）：pipx 装 ddns → 按 `DDNS_*` 生成 `/etc/ddns-harden/config.json`（目录 700、文件 600，token 不回显）→ 拿这份配置 `ddns --debug --config` 真跑一次自检 → 过了才 `ddns task --install --config`（默认 5 分钟续租）。四个参数缺一个就整段跳过——**连 ddns 都不装**、不写配置、不装任务（节点上不留用不上的包与空配置）；参数到位但字符集不合则停在写配置前，同样不装任务。若这台机器以前装过（`/etc/ddns-harden/config.json` 或 `ddns.timer` 还在），跳过时会多提示一句「仍在按旧配置跑」，要停掉跑 `--rollback`。
+- unattended-upgrades 只自动装 security 源补丁 + needrestart 自动重启受库更新影响的服务；**有内核更新才重启**，时刻取 `REBOOT_TIME`（默认 05:00），有人登录时不重启。三台错开 `REBOOT_TIME` 避免同时掉线。
+- journald 限额 `SystemMaxUse=200M`（保留至少 1G 空闲、最长 2 周）。
+- fail2ban sshd jail：递增封禁（`bantime.increment`）+ recidive 惯犯 jail。Debian 12 精简安装没有 `/var/log/auth.log`，backend 走 journald。
+- SSH 密钥化：候选公钥先单独 `ssh-keygen -lf` 验过**才写**进 authorized_keys（坏键/占位符不进文件）→ drop-in 关密码登录 + `AllowUsers` 白名单（默认只 root）+ `MaxStartups 5:30:20` 限速 + 关 X11/agent 转发 → `sshd -T` 断言真生效才 reload。没给公钥整段跳过、不关密码。被白名单挡在 SSH 外的现有登录账号（云镜像默认用户如 admin）会提示，不静默锁人。drop-in 写了但 `sshd -T` 仍不是 `no` 时，删掉 drop-in、不 reload，红字指出压制来源，按来源分两种给手工修法：**主配置 `Include` 之前那行**（sshd 只认第一个值，`sshd_config.d` 里怎么写都压不过）、**`sshd_config.d` 里按文件名排序比 `99-vnet-harden.conf` 靠前的文件**。修法按关键字注释整个文件里的 `PasswordAuthentication`（`sed 's/^[[:space:]]*PasswordAuthentication/#&/'`），不按行号——配置前后增删行或被重新生成过也注得对，`#` 后留着原值当线索；`50-cloud-init.conf` 另提示还要在 `/etc/cloud/cloud.cfg.d/99-disable-password-auth.cfg` 写 `ssh_pwauth: false`，否则重启会被改回来。脚本只打印步骤，不动这些别人的配置。
+- ufw default-deny：顺序是先放 SSH（自动探测端口）→ 放业务口 → 管理口仅面板 IP → 才 default deny incoming + enable。任一条放行失败就中止、不 enable。
+- AppArmor 启用断言（只读）：Debian 12 默认开，被内核参数关掉就提示；启用要改 cmdline 并重启，不代按。
+
+```bash
+curl -fsSL --connect-timeout 8 https://raw.githubusercontent.com/ProxyPanel/VNet-SSR/master/release/harden.sh \
+  | SSH_PUBKEY='ssh-ed25519 AAAA…' PANEL_IP='面板出口IP' PUSH_PORT='30108' ALLOW_PORTS='10000-20000' bash -s --
+```
+
+| 变量 | 含义 |
+| --- | --- |
+| `SSH_PUBKEY` | 运维公钥，给了才关密码登录。一个服务商一把，在运维机上生成（脚本不在节点上生成私钥） |
+| `SSH_ALLOW_USERS` | SSH 白名单，默认只 `root`；个别机器要用别的登录账号设 `'root <名字>'`。被挡外的现有登录账号会提示 |
+| `ALLOW_PORTS` | 业务口放行规则，见下面的写法 |
+| `PANEL_IP` | 面板访问节点时的**出口源 IP**（面板机 curl 节点时的源地址），不是面板域名解析到的 IP（可能隔 CDN）。给错管理口就被挡，节点收不到推送 |
+| `PUSH_PORT` | 节点管理口（面板节点编辑页的 `push_port`），只听 TCP |
+| `REBOOT_TIME` | 条件重启时刻，默认 05:00，三台各给不同值错开 |
+| `DHCP=1` | 本机走 DHCP 续租时放行 UDP 67/68（默认自动探测，探不到跳过并提示） |
+| `DDNS_DNS` | ddns 的提供方名（如 `dnspod`，取值见 `ddns --help`），**不是**要更新的域名 |
+| `DDNS_ID` | 提供方账号（或子账号/令牌 ID） |
+| `DDNS_TOKEN` | 提供方 API 密钥。只经环境变量/secrets 注入，不写脚本、不回显 |
+| `DDNS_IPV4` | 要更新的域名，逗号分隔（如 `a.ddns.newfuture.cc,b.ddns.newfuture.cc`） |
+| `AUTO_CONFIRM=1` | 跑完即确认、不起 10 分钟自动还原保险（**默认仍起保险**）。仅在你已验过密钥登录或自负锁死风险时用 |
+
+`ALLOW_PORTS` 写法：逗号分隔，每项 `N` 或 `N-M`，可带 `/tcp`、`/udp`、`/both` 后缀，**不带后缀默认 tcp+udp 都放行**。多端口节点填面板「系统设置」的 `min_port`–`max_port` 段（`Helpers::getPort()` 在这个范围内分配用户端口，整段放行规则不随用户增减漂移）；单端口节点填那个端口；混合写 `'443,8388,10000-20000'`。
+
+**防锁死（死人开关）**：关密码与开防火墙都有「配错一次连不回来」的路径，所以改完这两处**默认**会起一个 10 分钟 systemd 定时还原。已验过密钥登录或自负锁死风险时，加 `AUTO_CONFIRM=1`（或 `--auto-confirm`）跑完即确认、不起保险。默认流程：
+
+1. 跑完脚本，保持当前会话别断（reload/enable 不掉已建立的连接）。
+2. 开一个**新** SSH 会话，用密钥确认能登录。
+3. 能登录 → 跑 `curl -fsSL <同一地址> | bash -s -- --confirm` 取消自动还原。
+4. 登不上 → 什么都不做，10 分钟后自动删 sshd drop-in + 关 ufw，恢复密码登录。**别 reboot**（reboot 会丢 transient 定时器，保险就不触发了）。
+
+子命令（写给 bash）：`--confirm` 取消保险；`--auto-confirm` 同 `AUTO_CONFIRM=1`；`--rollback` 退回；`--status` 只读读数；`--self-update` 拉最新脚本覆盖本地；`--version` 打印脚本版本；`--help`。
+
+`--status` 一行一项（标签两字对齐 + 语义着色：绿=到位、黄=需注意/未到位、红=磁盘≥90% 或 EOL）：`系统`（发行版与 EOL 警示）/`节点`/`版本`/`上限`（fd）/`编号`（取自 config.json 的 node_id）/`拥塞`（cc + qdisc）/`时区`（+ NTP，取 systemd 的 `NTPSynchronized`：未启用 timesyncd、没网、刚开机未同步都会是 `no`；用 chrony/ntpd 替代 timesyncd 时它可能一直报 `no`，得用 `chronyc tracking` / `ntpq -p` 看真实状态）/`流量`（vnstat 今日 rx/tx）/`封禁`（fail2ban 在封数与 IP）/`防火`（ufw）/`认证`（`密码=` 与 `root=`；`sshd -T` 的 `without-password` 与 `prohibit-password` 是同一个值，统一显示 `prohibit-password`）/`磁盘`/`重启`/`保险`。没写 SSH drop-in 时多一行 `加固` 说明原因（没给公钥/公钥不对/`sshd -t` 不过/写了没生效）；「写了没生效」再跟一行 `压制`，只给文件与语句（如 `sshd_config: PasswordAuthentication yes`、`sshd_config.d/50-cloud-init.conf: PasswordAuthentication yes`），**不带行号**——行号只在跑的那会儿准，配置改过就会指错。
+
+纯 `curl | bash -s` 不落盘，事后子命令需再拉一次。想免下载就存成本地命令：`curl -fsSL -o /usr/local/bin/vnet-harden <地址> && chmod +x /usr/local/bin/vnet-harden`，之后 `vnet-harden --status / --rollback`。本地副本会过期，用 `vnet-harden --self-update` 拉最新覆盖（`curl -f` + `bash -n` 校验，下载失败或语法不过**不覆盖**、旧版继续可用；stdin 形态没有本地文件时装到 `/usr/local/bin/vnet-harden`）。self-update 只升 harden 脚本自身，升 vnet 二进制走 `upgrade.sh`，别混。
+
+`--rollback` 语义：删本脚本写的 drop-in、按清单逐条删自己加的 ufw 规则并还原改前默认策略与启用状态、还原补过的 sshd `Include`、删 `/etc/ddns-harden` 下的配置与 ddns 定时任务/缓存（`ddns task --uninstall` 认不出来时，按 unit 里写的配置路径认领后自己删，不留指向已删配置的 timer）。**不卸载已装的包**（vnstat/fail2ban/ufw/unattended-upgrades/needrestart/ddns 仍在，要彻底退 `apt remove`）；时区改回用 `timedatectl set-timezone Etc/UTC`。没有运行记录时 `--rollback` 不动 ufw，避免 wipe 掉别人预先存的规则。
+
+EOL：Debian 11 已过安全支持期（LTS 2026-08-31 结束），自动补丁拿不到新补丁——**先升 Debian 12/13 再加固，顺序不能反**。脚本探到 EOL 会警告但照常做其余加固；非 Debian 直接停（不在未验证的发行版上代按防火墙/SSH），没有 systemd 也直接停（10 分钟还原保险与 ddns 定时续租都靠它）。
+
+**首次上机验收**：脚本的 Linux 段（sshd/ufw/apt/systemd）未在开发机验证，开发机只跑了语法与纯函数测试（`bash release/harden_test.sh`）。先在一台**一次性 Debian 12/13 VPS** 上跑通下列清单，再上生产节点：
+
+- [ ] `--status` 核对：ufw=active、`认证` 行 `密码=no root=prohibit-password`、fail2ban sshd jail 在、vnstat 统计的是出网网卡、`保险` 行在 `--confirm` 前显示计时中。
+- [ ] 压制归因演练：在 `sshd_config` 的 `Include` 之前留一行 `PasswordAuthentication yes` 跑一遍，红字应说「主配置…Include 之前」并给 `f=…` + 按关键字注释的步骤；再把 `sshd_config.d/50-cloud-init.conf` 设成 `yes`、主配置那行注掉，红字应改说「按文件名排在 99-vnet-harden.conf 之前」并额外提示 cloud-init 的 `ssh_pwauth: false`。两处提示都不带行号，`--status` 的 `压制` 行同样只到文件与语句。
+- [ ] ddns：`systemctl list-timers | grep ddns` 有 `ddns.timer`、`ddns task --status` 显示 Installed/Enabled，域名已解析到本机公网 IP；`--rollback` 后 timer 与 `/etc/ddns-harden` 都不在了。
+- [ ] 新会话密钥登录成功 → `--confirm`；`systemctl list-timers` 里没有 `vnet-harden-revert`。
+- [ ] 故意不 `--confirm`，等 10 分钟：`journalctl -t vnet-harden` 有自动还原行、密码登录恢复、ufw inactive。
+- [ ] 面板推送可达：从面板机 curl 节点 `push_port` 通；节点 userList 能拉全量。
+- [ ] 客户端实测：单端口/多端口各连一个用户，TCP 与 UDP（若 `is_udp=1`）都通。
+- [ ] `--rollback` 后 ufw 回到改前状态、SSH 恢复密码登录、各 drop-in 删除。
+- [ ] 重跑一次（幂等）：authorized_keys 不重复写、ufw 规则不重复、改前基线不被污染。

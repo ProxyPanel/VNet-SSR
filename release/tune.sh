@@ -49,12 +49,15 @@ procOpenFiles() {
 before_cc=$(sysctl -qn net.ipv4.tcp_congestion_control 2>/dev/null)
 before_qd=$(sysctl -qn net.core.default_qdisc 2>/dev/null)
 before_ct=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)
+before_cte=$(cat /proc/sys/net/netfilter/nf_conntrack_tcp_timeout_established 2>/dev/null)
+before_mp=$(cat /proc/sys/net/ipv4/tcp_mtu_probing 2>/dev/null)
 before_nro=$(cat /proc/sys/fs/nr_open 2>/dev/null)
 before_fd=$(systemctl show vnet -p LimitNOFILE --value 2>/dev/null)
 before_real=$(procOpenFiles)
 
 colorEcho ${BLUE} "调优前的值："
-echo "  拥塞控制=${before_cc:-取不到} qdisc=${before_qd:-取不到} conntrack_max=${before_ct:-未加载} nr_open=${before_nro:-取不到}"
+echo "  拥塞控制=${before_cc:-取不到} qdisc=${before_qd:-取不到} mtu_probing=${before_mp:-取不到}"
+echo "  conntrack_max=${before_ct:-未加载} tcp_established=${before_cte:-未加载} nr_open=${before_nro:-取不到}"
 echo "  vnet 连接数上限：配置=${before_fd:-服务不存在} 进程实际=${before_real}"
 
 # 拥塞控制：已经是任一 BBR 变体就不动它，覆盖成原生 bbr 等于把装机者故意选的东西降级
@@ -84,6 +87,9 @@ mkdir -p /etc/systemd/system/vnet.service.d
   ((QD)) && echo 'net.core.default_qdisc = fq'
   # 长连接闲置后不再从慢启动重来，订阅客户端隔一会儿再用最明显
   echo 'net.ipv4.tcp_slow_start_after_idle = 0'
+  # 跨境线路上中间设备常把 packet-too-big 丢掉（MTU 黑洞）：握手正常、大包卡死。
+  # 开探测让内核自己找得到达对端的可行 MTU，代价只是偶尔多几个探测包
+  echo 'net.ipv4.tcp_mtu_probing = 1'
   echo 'net.ipv4.tcp_keepalive_time = 300'
   echo 'net.ipv4.tcp_keepalive_intvl = 30'
   echo 'net.ipv4.tcp_keepalive_probes = 4'
@@ -114,9 +120,15 @@ else
   rm -f "$MODLOAD"
 fi
 
-# conntrack 只有模块在跑才写，否则这两行会让 sysctl --system 报无关键
+# conntrack 只有模块在跑才写，否则这些 net.netfilter.* 会让 sysctl --system 报无关键
 if [[ -e /proc/sys/net/netfilter/nf_conntrack_max ]]; then
   echo 'net.netfilter.nf_conntrack_max = 262144' >>"$CONF"
+  # 只调大上限不够：默认 established 要占 5 天、time_wait 120s，表项回收慢，被打时先 table full。
+  # 代理长连接有 keepalive(300s) 保活，1800s 足够；UDP 两行本来就是默认值，写出来是为了将来改得动
+  echo 'net.netfilter.nf_conntrack_tcp_timeout_established = 1800' >>"$CONF"
+  echo 'net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30' >>"$CONF"
+  echo 'net.netfilter.nf_conntrack_udp_timeout = 30' >>"$CONF"
+  echo 'net.netfilter.nf_conntrack_udp_timeout_stream = 120' >>"$CONF"
   echo "options nf_conntrack hashsize=$CONNTRACK_HASH" >"$CONNTRACK"
 else
   rm -f "$CONNTRACK"
@@ -158,8 +170,11 @@ colorEcho ${BLUE} "调优后的值："
 after_cc=$(sysctl -qn net.ipv4.tcp_congestion_control 2>/dev/null)
 after_qd=$(sysctl -qn net.core.default_qdisc 2>/dev/null)
 after_ct=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)
+after_cte=$(cat /proc/sys/net/netfilter/nf_conntrack_tcp_timeout_established 2>/dev/null)
+after_mp=$(cat /proc/sys/net/ipv4/tcp_mtu_probing 2>/dev/null)
 after_nro=$(cat /proc/sys/fs/nr_open 2>/dev/null)
-echo "  拥塞控制=${after_cc:-取不到} qdisc=${after_qd:-取不到} conntrack_max=${after_ct:-未加载} nr_open=${after_nro:-取不到}"
+echo "  拥塞控制=${after_cc:-取不到} qdisc=${after_qd:-取不到} mtu_probing=${after_mp:-取不到}"
+echo "  conntrack_max=${after_ct:-未加载} tcp_established=${after_cte:-未加载} nr_open=${after_nro:-取不到}"
 echo "  vnet 连接数上限：配置=$(systemctl show vnet -p LimitNOFILE --value 2>/dev/null) 进程实际=$(procOpenFiles)"
 echo "  配置文件：$CONF"
 echo "  一键还原：bash release/tune.sh --rollback"
